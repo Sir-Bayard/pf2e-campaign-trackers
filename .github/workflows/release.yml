@@ -30,7 +30,7 @@ jobs:
           mv module.tmp module.json
 
       - name: Zip the module
-        run: zip -r module.zip . -x '.git/*' '.github/*' '.gitignore' 'module.zip'
+        run: zip -r module.zip . -x '.git/*' '.github/*' '.gitignore' 'module.zip' 'docs/*'
 
       - name: Attach module.json and module.zip to the release
         env:
