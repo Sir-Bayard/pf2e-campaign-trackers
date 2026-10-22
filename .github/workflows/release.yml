@@ -1,0 +1,38 @@
+name: Release
+
+# Publishing a GitHub release with a tag such as v1.2.3 builds the module:
+# it checks that module.json has the same version, points module.json's download
+# at this release, zips the module and attaches module.json and module.zip.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the version matches the tag
+        run: |
+          VERSION=$(jq -r .version module.json)
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$VERSION" != "$TAG" ]; then
+            echo "module.json says $VERSION but the release tag is $GITHUB_REF_NAME"; exit 1
+          fi
+
+      - name: Point the download at this release
+        run: |
+          jq --arg d "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/module.zip" '.download = $d' module.json > module.tmp
+          mv module.tmp module.json
+
+      - name: Zip the module
+        run: zip -r module.zip . -x '.git/*' '.github/*' '.gitignore' 'module.zip'
+
+      - name: Attach module.json and module.zip to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" module.json module.zip --clobber

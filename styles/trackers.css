@@ -1,0 +1,174 @@
+/* PF2e Campaign Trackers. Scoped under .pct-app and .pct-chat, with resets for modules that ship unscoped rules. */
+
+.application.pct-app { --pct-accent: #b08d4a; --pct-fill: #a63d32; --pct-ok: #4f8a4b; --pct-warn: #c06a2b; --pct-line: rgba(127, 127, 127, 0.35); --pct-soft: rgba(127, 127, 127, 0.12); }
+.application.pct-app .window-content { padding: 0; display: flex; flex-direction: column; overflow: hidden; }
+.pct-app .pct { display: flex; height: 100%; min-height: 0; font-size: 13px; }
+.pct-app .pct a { cursor: pointer; text-decoration: none; text-transform: none; flex: 0 0 auto; }
+.pct-app .pct i { position: static; display: inline-block; width: auto; }
+.pct-app .pct span, .pct-app .pct strong, .pct-app .pct em { overflow: visible; text-overflow: clip; white-space: normal; flex: initial; }
+.pct-app .pct label { display: inline-flex; align-items: center; gap: 4px; margin: 0; }
+.pct-app .pct h2, .pct-app .pct h3 { border: none; margin: 0; }
+.pct-app .pct p { margin: 2px 0; }
+.pct-app .pct ul, .pct-app .pct ol { margin: 0; padding: 0; list-style: none; }
+.pct-app .pct button { width: auto; flex: 0 0 auto; }
+.pct-app textarea::placeholder, .pct-app input::placeholder { color: currentColor; opacity: 0.55; font-style: italic; }
+
+/* Rail */
+.pct-app .pct-rail { flex: 0 0 168px; display: flex; flex-direction: column; gap: 2px; padding: 8px 6px; border-right: 1px solid var(--pct-line); overflow-y: auto; }
+.pct-app .pct .pct-rail > a { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 5px; opacity: 0.8; }
+.pct-app .pct .pct-rail > a i { width: 16px; text-align: center; }
+.pct-app .pct .pct-rail > a span { flex: 1; }
+.pct-app .pct .pct-rail > a em { font-style: normal; font-size: 11px; opacity: 0.7; }
+.pct-app .pct .pct-rail > a:hover { opacity: 1; background: var(--pct-soft); }
+.pct-app .pct .pct-rail > a.active { opacity: 1; font-weight: 600; background: var(--pct-soft); box-shadow: inset 3px 0 0 var(--pct-accent); }
+.pct-app .pct-rail-foot { margin-top: auto; display: flex; flex-direction: column; gap: 4px; padding-top: 8px; border-top: 1px solid var(--pct-line); }
+
+/* Body */
+.pct-app .pct-body { flex: 1; min-width: 0; overflow-y: auto; padding: 10px 14px 18px; }
+.pct-app .pct-tab-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.pct-app .pct-tab-head h2 { font-size: 18px; }
+.pct-app .pct-hint { opacity: 0.7; font-style: italic; font-size: 12px; }
+
+/* Buttons */
+.pct-app .pct .pct-btn { display: inline-flex; align-items: center; gap: 5px; padding: 2px 7px; border-radius: 4px; border: 1px solid var(--pct-line); line-height: 20px; white-space: nowrap; }
+.pct-app .pct .pct-btn:hover { background: var(--pct-soft); }
+.pct-app .pct .pct-btn.pct-on { border-color: var(--pct-accent); color: var(--pct-accent); }
+.pct-app .pct .pct-new { font-weight: 600; }
+.pct-app .pct .pct-add { margin-top: 4px; font-size: 12px; opacity: 0.85; border-style: dashed; }
+.pct-app .pct .pct-eye { border: none; padding: 2px 4px; opacity: 0.55; }
+.pct-app .pct .pct-eye.pct-on { opacity: 1; }
+.pct-app .pct .pct-card-post { border: none; padding: 2px 4px; opacity: 0.7; }
+
+/* Cards */
+.pct-app .pct-card { border: 1px solid var(--pct-line); border-left: 4px solid var(--pct-accent); border-radius: 6px; margin-bottom: 10px; }
+.pct-app .pct-card.pct-hidden { border-left-color: var(--pct-line); }
+.pct-app .pct-card > header { display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: var(--pct-soft); border-radius: 5px 5px 0 0; }
+.pct-app .pct-card > header h3 { font-size: 15px; }
+.pct-app .pct .pct-card > header .pct-fold { border: none; padding: 0 2px; }
+.pct-app .pct .pct-sum { opacity: 0.75; font-size: 12px; }
+.pct-app .pct .pct-tools { margin-left: auto; display: flex; gap: 2px; }
+.pct-app .pct .pct-tools .pct-btn { border: none; padding: 2px 5px; opacity: 0.8; }
+.pct-app .pct .pct-tools .pct-btn.pct-on, .pct-app .pct .pct-tools .pct-btn:hover { opacity: 1; }
+.pct-app .pct-card-body { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 6px; }
+.pct-app .pct-desc { opacity: 0.9; font-style: italic; }
+.pct-app .pct .pct-gm { opacity: 0.8; font-size: 12px; }
+.pct-app .pct .pct-sub { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.7; margin-top: 4px; display: flex; align-items: center; gap: 4px; }
+.pct-app .pct .pct-chip { font-size: 11px; padding: 0 7px; border-radius: 10px; border: 1px solid var(--pct-line); white-space: nowrap; line-height: 18px; }
+.pct-app .pct .pct-k { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.7; margin-right: 2px; }
+.pct-app .pct-notes-box summary { cursor: pointer; font-size: 12px; opacity: 0.8; }
+.pct-app .pct-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.pct-app .pct .pct-big { font-size: 20px; font-weight: 600; }
+.pct-app .pct .pct-big span { font-size: 13px; font-weight: normal; opacity: 0.7; }
+
+/* Stepper */
+.pct-app .pct .pct-stepper { display: inline-flex; align-items: center; gap: 2px; }
+.pct-app .pct .pct-step-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.7; margin-right: 4px; }
+.pct-app .pct .pct-step { padding: 0 6px; font-size: 12px; min-width: 26px; justify-content: center; }
+.pct-app .pct .pct-value { min-width: 34px; text-align: center; font-weight: 700; font-size: 15px; padding: 0 4px; }
+
+/* Bars, thresholds, ladders */
+.pct-app .pct-bar { height: 6px; border-radius: 3px; background: var(--pct-soft); overflow: hidden; }
+.pct-app .pct-bar > div { height: 100%; background: var(--pct-accent); }
+.pct-app .pct-thresholds li, .pct-app .pct-notes li { display: flex; align-items: baseline; gap: 6px; padding: 2px 0; }
+.pct-app .pct-thresholds li { opacity: 0.75; }
+.pct-app .pct-thresholds li.pct-reached { opacity: 1; }
+.pct-app .pct-thresholds li.pct-reached > i { color: var(--pct-ok); }
+.pct-app .pct-rep { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+.pct-app .pct-tier-now { flex: 1; min-width: 200px; }
+.pct-app .pct-tier-now > strong { font-size: 16px; }
+.pct-app .pct-ladder { display: flex; flex-direction: column; gap: 1px; }
+.pct-app .pct-ladder li { padding: 2px 8px; border-left: 3px solid transparent; opacity: 0.7; }
+.pct-app .pct-ladder li.pct-current { opacity: 1; border-left-color: var(--pct-accent); background: var(--pct-soft); }
+.pct-app .pct .pct-range { font-size: 11px; opacity: 0.75; margin-left: 4px; }
+.pct-app .pct .pct-for { font-size: 12px; opacity: 0.8; }
+
+/* Checks */
+.pct-app .pct-checks { display: flex; flex-direction: column; gap: 3px; }
+.pct-app .pct-check { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.pct-app .pct button.pct-roll { display: inline-flex; align-items: center; gap: 5px; padding: 0 8px; line-height: 22px; font-size: 12px; }
+.pct-app .pct button.pct-roll em { font-style: normal; opacity: 0.75; }
+
+/* Chase track */
+.pct-app .pct-track { display: flex; gap: 4px; flex-wrap: wrap; counter-reset: none; }
+.pct-app .pct-track li { display: flex; align-items: center; gap: 5px; padding: 3px 8px; border: 1px solid var(--pct-line); border-radius: 12px; font-size: 12px; }
+.pct-app .pct-track li.pct-done { opacity: 0.55; }
+.pct-app .pct-track li.pct-current { border-color: var(--pct-accent); background: var(--pct-soft); font-weight: 600; }
+.pct-app .pct .pct-track-n { opacity: 0.6; }
+.pct-app .pct .pct-track-pts { opacity: 0.8; font-size: 11px; }
+.pct-app .pct .pct-marks { display: inline-flex; gap: 4px; }
+.pct-app .pct .pct-quarry { color: var(--pct-fill); }
+.pct-app .pct-obstacle { border-left: 2px solid var(--pct-line); padding: 3px 0 3px 8px; display: flex; flex-direction: column; gap: 3px; }
+.pct-app .pct-obstacle.pct-current { border-left-color: var(--pct-accent); }
+.pct-app .pct-obstacle.pct-done { opacity: 0.6; }
+.pct-app .pct-indiv { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.pct-app .pct .pct-pc { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
+
+/* Influence */
+.pct-app .pct-npc { display: inline-flex; align-items: center; gap: 6px; padding: 2px 6px 2px 2px; border: 1px solid var(--pct-line); border-radius: 18px; }
+.pct-app .pct-npc img { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; object-position: top; border: none; }
+.pct-app .pct-npc.pct-drop { border-style: dashed; padding: 5px 10px; opacity: 0.75; font-size: 12px; }
+
+/* Clocks */
+.pct-app .pct-clockwrap { display: flex; gap: 14px; align-items: flex-start; }
+.pct-clock path { stroke: currentColor; stroke-opacity: 0.6; stroke-width: 1.5; fill: transparent; }
+.pct-clock path.pct-seg-filled { fill: #a63d32; }
+.pct-clock path.pct-seg-broken { fill: rgba(127, 127, 127, 0.45); }
+.pct-app .pct-segs { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.pct-app .pct-seg { display: flex; align-items: baseline; gap: 6px; }
+.pct-app .pct .pct-seg .pct-btn { border: none; padding: 0 3px; }
+.pct-app .pct-seg-filled > .pct-btn i { color: var(--pct-fill); }
+.pct-app .pct-seg-broken .pct-seg-label { text-decoration: line-through; opacity: 0.6; }
+.pct-app .pct .pct-seg-n { opacity: 0.6; min-width: 14px; }
+.pct-app .pct .pct-seg-label { flex: 1; display: flex; flex-direction: column; }
+
+/* Checklists */
+.pct-app .pct-entries li { display: flex; align-items: flex-start; gap: 6px; padding: 3px 0; border-bottom: 1px solid var(--pct-soft); }
+.pct-app .pct-entries li.pct-done .pct-entry > div:first-child strong { text-decoration: line-through; opacity: 0.7; }
+.pct-app .pct-entry { flex: 1; display: flex; flex-direction: column; gap: 1px; }
+.pct-app .pct .pct-date-chip { font-size: 11px; opacity: 0.8; white-space: nowrap; margin-left: 4px; }
+.pct-app .pct .pct-date-chip.pct-today { color: var(--pct-warn); opacity: 1; font-weight: 600; }
+.pct-app .pct .pct-date-chip.pct-closed { opacity: 0.55; text-decoration: line-through; }
+
+/* Editing */
+.pct-app .pct-edit { display: flex; flex-direction: column; gap: 6px; }
+.pct-app .pct .pct-field { display: inline-flex; flex-direction: column; align-items: stretch; gap: 1px; }
+.pct-app .pct .pct-field > span { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.7; }
+.pct-app .pct .pct-field.pct-grow { flex: 1; min-width: 160px; }
+.pct-app .pct .pct-field.pct-block { display: flex; }
+.pct-app .pct .pct-field.pct-w8 { width: 9em; }
+.pct-app .pct .pct-field.pct-w6 { width: 6em; }
+.pct-app .pct-field textarea { width: 100%; resize: vertical; font-size: 12px; }
+.pct-app .pct input.pct-dc { width: 4.5em; }
+.pct-app .pct input.pct-num { width: 5em; }
+.pct-app .pct input.pct-skill { width: 11em; }
+.pct-app .pct input.pct-date { width: 9em; }
+.pct-app .pct-list { display: flex; flex-direction: column; gap: 4px; }
+.pct-app .pct-row { display: flex; gap: 6px; align-items: flex-start; padding: 4px 6px; border: 1px solid var(--pct-soft); border-radius: 4px; }
+.pct-app .pct-row-main { flex: 1; display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: flex-end; min-width: 0; }
+.pct-app .pct-row-main > .pct-line, .pct-app .pct-row-main > .pct-field.pct-block, .pct-app .pct-row-main > .pct-nested { width: 100%; }
+.pct-app .pct .pct-row-tools { display: flex; gap: 0; }
+.pct-app .pct .pct-row-tools .pct-btn { border: none; padding: 2px 4px; opacity: 0.6; }
+.pct-app .pct-nested { padding-left: 12px; border-left: 2px solid var(--pct-soft); }
+.pct-app .pct-degrees { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: flex-end; }
+.pct-app .pct-degrees .pct-sub { width: 100%; }
+.pct-app .pct .pct-chk { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; font-size: 12px; }
+
+/* Chat */
+.pct-chat header { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.pct-chat ul { margin: 2px 0 0; padding-left: 16px; }
+.pct-chat .pct-chat-big { font-size: 15px; font-weight: 600; margin: 2px 0; }
+.pct-chat .pct-chat-clock { display: flex; align-items: center; gap: 10px; }
+.pct-chat .pct-chat-list { list-style: none; padding: 0; }
+.pct-chat .pct-req { display: flex; flex-direction: column; gap: 3px; margin: 4px 0; }
+.pct-chat .pct-req button { text-align: left; line-height: 1.3; padding: 3px 8px; }
+.pct-chat .pct-req button span { opacity: 0.8; font-size: 12px; }
+.pct-chat .pct-hint { opacity: 0.7; font-style: italic; font-size: 11px; margin: 2px 0 0; }
+.pct-apply { margin-top: 6px; padding-top: 6px; border-top: 1px dashed rgba(127, 127, 127, 0.5); font-size: 12px; }
+.pct-apply button { width: 100%; line-height: 24px; }
+.pct-apply .pct-preview { opacity: 0.75; margin-top: 2px; }
+
+/* Pressure meter: one segment per band */
+.pct-app .pct-meter { display: flex; gap: 3px; height: 10px; }
+.pct-app .pct-band { background: var(--pct-soft); border-radius: 3px; overflow: hidden; outline: 1px solid var(--pct-line); }
+.pct-app .pct-band.pct-current { outline-color: var(--pct-accent); }
+.pct-app .pct-band > div { height: 100%; background: var(--pct-fill); }

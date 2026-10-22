@@ -1,0 +1,9 @@
+# Keep LF line endings everywhere, on every computer (Foundry and GitHub expect them)
+* text=auto eol=lf
+
+# Compendium packs and images are binary: never touch their bytes
+packs/** binary
+*.webp binary
+*.png binary
+*.jpg binary
+*.zip binary
