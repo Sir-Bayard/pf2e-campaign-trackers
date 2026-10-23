@@ -177,6 +177,6 @@ Open an [issue](https://github.com/Sir-Bayard/pf2e-campaign-trackers/issues).
 
 [MIT](LICENSE). Copyright (c) 2026 Sir Bayard.
 
-## Paizo Community Use
+## Pathfinder
 
-PF2e Campaign Trackers uses trademarks and/or copyrights owned by Paizo Inc., used under Paizo's Community Use Policy ([paizo.com/licenses/communityuse](https://paizo.com/licenses/communityuse)). We are expressly prohibited from charging you to use or access this content. PF2e Campaign Trackers is not published, endorsed, or specifically approved by Paizo. For more information about Paizo Inc. and Paizo products, visit [paizo.com](https://paizo.com).
+PF2e Campaign Trackers is an unofficial, free module for the Pathfinder Second Edition system on Foundry VTT. It is not published, endorsed or specifically approved by Paizo Inc. Pathfinder is a trademark of Paizo Inc., used here only to say which game the module works with. The module follows the game's rules, which Paizo publishes under the ORC License, and refers to them by name; it doesn't reproduce Paizo's rules text, art or setting material.
