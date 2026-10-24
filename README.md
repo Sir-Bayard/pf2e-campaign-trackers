@@ -1,6 +1,6 @@
 # PF2e Campaign Trackers
 
-GM Core's subsystems and a few table-neutral trackers in one window: Reputation, Victory Points, Influence, Research, Chases, Infiltration, Clocks and Checklists. Everything is hidden from players until the GM reveals it. Checks roll through the PF2e system and the GM applies the result from the roll card. Dates on clocks and checklists send the GM a whisper when the calendar reaches them. Other modules can ship campaign content as a preset.
+GM Core's subsystems and a few table-neutral trackers in one window: Reputation, Pressure, Victory Points, Influence, Research, Chases, Infiltration, Clocks and Checklists. Everything is hidden from players until the GM reveals it. Checks roll through the PF2e system and the GM applies the result from the roll card. Dates on clocks and checklists send the GM a whisper when the calendar reaches them. Other modules can ship campaign content as a preset.
 
 ## What it looks like
 

@@ -488,8 +488,9 @@ function project(t, { force = false } = {}) {
       return { ...p, value: t.showValue ? num(t.value) : null, tier: tier?.id ?? null, tiers: tierLadder(t).map((x) => ({ id: x.id, label: x.label, range: t.showValue ? x.range : "", text: x.text })) };
     }
     case "pressure": {
-      const tier = currentTier(t);
-      return { ...p, value: t.showValue ? num(t.value) : null, max: t.showValue ? nullNum(t.max) : null, tier: tier?.id ?? null, tiers: tierLadder(t).map((x) => ({ id: x.id, label: x.label, range: t.showValue ? x.range : "", text: x.text })), thresholds: reached(shown(t.thresholds), t.value).map(({ at, text, reached: r }) => ({ at: t.showValue ? at : null, text, reached: r })) };
+      // Players see the band the track is in, never the ladder: the bands above it stay the GM's.
+      const tier = tierLadder(t).find((x) => x.id === currentTier(t)?.id) ?? null;
+      return { ...p, value: t.showValue ? num(t.value) : null, max: t.showValue ? nullNum(t.max) : null, tier: tier?.id ?? null, tiers: tier ? [{ id: tier.id, label: tier.label, range: t.showValue ? tier.range : "", text: tier.text }] : [], thresholds: reached(shown(t.thresholds), t.value).map(({ at, text, reached: r }) => ({ at: t.showValue ? at : null, text, reached: r })) };
     }
     case "points":
       return { ...p, value: t.showValue ? num(t.value) : null, max: t.showValue ? nullNum(t.max) : null, thresholds: reached(shown(t.thresholds), t.value).map(({ at, text, reached: r }) => ({ at: t.showValue ? at : null, text, reached: r })), checks: shown(t.checks).map(pubCheck) };

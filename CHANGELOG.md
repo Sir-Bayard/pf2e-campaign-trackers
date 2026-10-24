@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4
+
+- A revealed Pressure track sends players only the band it's in. It used to send the whole ladder of band names, which players never saw in the window but could read from the game data.
+- The module description lists Pressure among the trackers.
+
 ## 0.1.3
 
 - The data journal can't be deleted by accident any more; `api.unlockStore()` lets it through. If more than one journal carries the data, you are warned and the one already in use is kept.
