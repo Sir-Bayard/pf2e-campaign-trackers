@@ -18,6 +18,16 @@ One window, a tab for each kind of tracker. Everything starts hidden: reveal a t
 </table>
 <table>
 <tr>
+<td width="50%" valign="top"><img src="docs/images/skill-challenge.png" alt="Skill challenge, GM view"></td>
+<td width="50%" valign="top"><img src="docs/images/skill-challenge-player.png" alt="Skill challenge, player view"></td>
+</tr>
+<tr>
+<td valign="top"><b>Skill challenges</b>, as the GM sees it: what each approach really is, its DCs, a consequence on a critical failure, a hidden approach, and the results so far.</td>
+<td valign="top">The same challenge in the players' window: spoiler-free approach names, no DCs, and a button to propose their own.</td>
+</tr>
+</table>
+<table>
+<tr>
 <td width="50%" valign="top"><img src="docs/images/reputation.png" alt="Reputation"></td>
 <td width="50%" valign="top"><img src="docs/images/pressure.png" alt="Pressure track"></td>
 </tr>
@@ -160,11 +170,13 @@ A skill challenge is a goal the party reaches with a number of successes before 
 
 **Proposals.** Both chat cards, and the challenge in the players' window, have **Propose an approach**. A player picks one of their character's skills and writes what they do and why the skill fits. The proposal goes to chat for the table to see. On it you can change the skill, set the DC (Easy and Hard move it by 2), choose what it counts as, save it as a new approach for the challenge (players see it by what they wrote), and approve or decline it with a reason. Approved, it becomes a roll button for that player.
 
+<img src="docs/images/skill-challenge-proposal.png" alt="A proposal waiting for the GM" width="421">
+
 The DC on a proposal or a check starts from an approach that uses the same skill, or else from the standard DC for the character's level.
 
 **What players see.** Never a DC: not in their window, not on the cards, not on their roll, which says only "Success" or "Failure". Every roll records through your Apply button as usual, and the challenge keeps a list of the results. A critical failure on an approach with a consequence shows it to you on the Apply box. As with everything here, DCs aren't secret from a player who digs through the browser console (see [Hidden until revealed](#hidden-until-revealed)).
 
-The DC filled in on a proposal or a check comes from a revealed approach that uses the same skill. Hidden approaches are never picked for you: choose one under "Counts as" when that's what the player has stumbled on.
+The DC filled in on a proposal or a check comes from a revealed approach that uses the same skill and isn't used up. Hidden approaches are never picked for you: choose one under "Counts as" when that's what the player has stumbled on.
 
 
 ## Reminders

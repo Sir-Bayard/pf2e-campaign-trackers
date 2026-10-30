@@ -945,6 +945,9 @@ async function postChallengeCard(t, mode) {
   });
 }
 
+/** An approach the DC prefill may pick: revealed, and not used up. Hidden or spent ones are the GM's to pick by hand. */
+const prefillable = (a) => a.revealed && !(nullNum(a.uses) !== null && num(a.used) >= num(a.uses));
+
 /** The standard DC for each level, 0 to 25. */
 const LEVEL_DC = [14, 15, 16, 18, 19, 20, 22, 23, 24, 26, 27, 28, 30, 31, 32, 34, 35, 36, 38, 39, 40, 42, 44, 46, 48, 50];
 const levelDC = (level) => LEVEL_DC[clamp(Math.round(num(level)), 0, LEVEL_DC.length - 1)];
@@ -1072,7 +1075,7 @@ function proposalControls(message, prop, actor) {
   // An approach that already uses the skill gives the DC and the link; otherwise the character's level does.
   const prefill = () => {
     const skill = $("skill").value;
-    const a = t.approaches.find((x) => x.revealed && x.checks.some((c) => String(c.skill).toLowerCase() === skill && c.dc !== null && c.dc !== ""));
+    const a = t.approaches.find((x) => prefillable(x) && x.checks.some((c) => String(c.skill).toLowerCase() === skill && c.dc !== null && c.dc !== ""));
     const c = a?.checks.find((x) => String(x.skill).toLowerCase() === skill);
     $("dc").value = c ? num(c.dc) : levelDC(actor?.level ?? 0);
     $("approach").value = a?.id ?? "";
@@ -1166,7 +1169,7 @@ async function adhocDialog(t) {
         const prefill = (fromSkill) => {
           const skill = $("skill").value;
           const hasDC = (c) => lc(c.skill) === skill && c.dc !== null && c.dc !== "";
-          if (fromSkill) $("approach").value = t.approaches.find((a) => a.revealed && a.checks.some(hasDC))?.id ?? "";
+          if (fromSkill) $("approach").value = t.approaches.find((a) => prefillable(a) && a.checks.some(hasDC))?.id ?? "";
           const c = t.approaches.find((a) => a.id === $("approach").value)?.checks.find(hasDC);
           const chosen = [...root.querySelectorAll("input[name=pc]:checked")].map((i) => game.actors.get(i.value));
           const levels = (chosen.length ? chosen : pcs).map((a) => num(a?.level));
