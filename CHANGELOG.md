@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.0
+
+- New Skill Challenges tab. A challenge is a number of successes before too many failures, with what each result adds, milestones, a round limit if you want one, and what happens on success and on failure.
+- Approaches: each has a name players see (keep it free of spoilers), the real story for you, a consequence on a critical failure, an optional limit on uses, and its skills and DCs.
+- Post skills puts the skills that could help in chat, with no approaches and no DCs. Post options puts the revealed approaches in chat with roll buttons.
+- Players can propose an approach: a skill, what they do and why it fits. You change the skill or the DC, link it to an approach or save it as a new one, and approve or decline it. An approved proposal becomes a roll button for that player. Writing the what and why can be made optional per challenge.
+- Check: call for a check on the fly from the challenge, and send the characters a roll button or roll for them now.
+- Players never see a DC in a skill challenge, including on their own roll.
+- Optional: one check per character per round, which Apply warns about.
+- Undo on applied roll cards, taking back exactly what that roll applied. (Cards applied before 1.0.0 don't have it.)
+- A hero-point reroll of an applied check offers to replace the first result with the new one. Before, the new card could be applied on top of the first.
+- After a reload, the GM's Apply buttons on older roll cards came back missing until the next message. They're drawn once the tracker data is loaded.
+- Presets can include skill challenges; an update keeps the counts, uses and results.
+- The README now says plainly that hidden trackers are hidden from players' screens, not secret: Foundry sends the data to every browser.
+- Going back to 0.1.4 after this turns skill challenges into Victory Points trackers. Export your data first if you might.
+
 ## 0.1.4
 
 - A revealed Pressure track sends players only the band it's in. It used to send the whole ladder of band names, which players never saw in the window but could read from the game data.

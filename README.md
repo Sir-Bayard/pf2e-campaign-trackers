@@ -1,6 +1,6 @@
 # PF2e Campaign Trackers
 
-GM Core's subsystems and a few table-neutral trackers in one window: Reputation, Pressure, Victory Points, Influence, Research, Chases, Infiltration, Clocks and Checklists. Everything is hidden from players until the GM reveals it. Checks roll through the PF2e system and the GM applies the result from the roll card. Dates on clocks and checklists send the GM a whisper when the calendar reaches them. Other modules can ship campaign content as a preset.
+GM Core's subsystems and a few table-neutral trackers in one window: Reputation, Pressure, Victory Points, Skill Challenges, Influence, Research, Chases, Infiltration, Clocks and Checklists. Everything is hidden from players until the GM reveals it. Checks roll through the PF2e system and the GM applies the result from the roll card. In a skill challenge, players can propose their own approach and the GM approves it with a DC on the spot. Dates on clocks and checklists send the GM a whisper when the calendar reaches them. Other modules can ship campaign content as a preset.
 
 ## What it looks like
 
@@ -73,7 +73,7 @@ Updating keeps your trackers. Export them first anyway (see [Backup: export and 
 
 ## What it does
 
-GM Core's subsystems and a few table-neutral trackers in one window, one tab each: Reputation, Pressure, Victory Points, Influence, Research, Chases, Infiltration, Clocks and Checklists. Everything is hidden from players until you reveal it. Checks roll through the PF2e system and you apply the result from the roll card. Dates on clocks and checklist entries whisper you a reminder when the calendar reaches them. Another module can ship campaign content as a preset.
+GM Core's subsystems and a few table-neutral trackers in one window, one tab each: Reputation, Pressure, Victory Points, Skill Challenges, Influence, Research, Chases, Infiltration, Clocks and Checklists. Everything is hidden from players until you reveal it. Checks roll through the PF2e system and you apply the result from the roll card. Dates on clocks and checklist entries whisper you a reminder when the calendar reaches them. Another module can ship campaign content as a preset.
 
 It replaces PF2e Subsystems. Rebuild any event you had there as a tracker here, then turn PF2e Subsystems and PF2e Subsystem Theming off.
 
@@ -90,6 +90,7 @@ The window remembers its tab, which cards are folded and which GM-notes boxes ar
 - **Reputation**: A number with named tiers. Starts with GM Core's tiers (Hunted to Revered, -50 to +50); change them to your own. Each tier has text players see and text only you see.
 - **Pressure**: Something building against the party: heat, alarm, suspicion, doom. A number in named bands, each with text for players and for you, plus events at set values. You move it with + and -; it has no checks. Hidden number by default, and a Halve button.
 - **Victory Points**: Progress the party earns with checks toward a goal, with thresholds along the way.
+- **Skill Challenges**: A number of successes before too many failures, reached through approaches you list and approaches the players propose. See [Skill challenges](#skill-challenges).
 - **Influence**: An NPC, influence points, thresholds, influence skills, Discover checks, resistances, weaknesses and rounds.
 - **Research**: Research points, thresholds, and research checks, each with the most points it can give.
 - **Chases**: A run of obstacles with chase points, the party's position and the other side's (the quarry, or pursuers).
@@ -103,7 +104,9 @@ Click New on a tab to add one. The pencil edits it, the eye shows or hides it, t
 
 Every tracker starts hidden. The eye on a tracker shows it to players; inside it, the eyes on tiers, thresholds, checks, obstacles and entries show those too. Players never see your notes or the "GM only" text, and roll cards show DCs only as PF2e's own "show DCs" setting allows. "Player view" at the bottom of the tab list shows you the window as players see it.
 
-Your data is kept in a journal entry called "Campaign Trackers (GM data)", hidden from players. Leave it where it is: the module refuses to delete it, and warns if a copy of it turns up. Players get a copy of what you have revealed, nothing more.
+Your data is kept in a journal entry called "Campaign Trackers (GM data)", hidden from players. Leave it where it is: the module refuses to delete it, and warns if a copy of it turns up. Players' windows are drawn from a copy of what you have revealed, nothing more.
+
+Hidden means hidden from the players' screens, not secret. Foundry sends every journal entry and world setting to every player's browser, whatever its permissions, so a player who goes looking in the browser console can read all of it: your notes, hidden trackers, DCs. Keep anything truly secret out of Foundry.
 
 ## Backup: export and import
 
@@ -131,7 +134,38 @@ Each check has a skill, a DC and what it's for. Skill is the PF2e slug: athletic
 - The share icon posts the checks to chat as buttons players click to roll. On Influence, Research and Victory Points only revealed checks are posted.
 - The roll card gets an Apply button that only you see. It says what it will do ("Success, +1 at The open lead") and does nothing until you click it. After that the card says what was applied.
 
-Points per result follow GM Core (critical success 2, success 1, critical failure -1) and can be changed per tracker. Infiltration uses GM Core's rules: successes earn infiltration points, failures add awareness. A roll made from the character sheet isn't tied to a tracker and has no Apply button; use the + and - buttons instead. When a check is rerolled, apply the roll you keep.
+Points per result follow GM Core (critical success 2, success 1, critical failure -1) and can be changed per tracker. Infiltration uses GM Core's rules: successes earn infiltration points, failures add awareness. A roll made from the character sheet isn't tied to a tracker and has no Apply button; use the + and - buttons instead.
+
+Once applied, the card says what it did and has an Undo, which takes back exactly that roll's result and nothing done since. When a player rerolls an applied check with a hero point, PF2e replaces the roll card; the new card says what the first roll applied and offers to replace it with the new result. That offer needs a GM logged in at the time of the reroll; otherwise Undo the first result yourself before applying the new one.
+
+## Skill challenges
+
+A skill challenge is a goal the party reaches with a number of successes before too many failures: crossing a flooded river, talking a mob down, finding the way through a marsh. It's built for the players to say what their characters do and why a skill fits, not just to pick from a list.
+
+**Setting one up.** Under Edit:
+
+- Successes needed, failures allowed and, if you like, a number of rounds. Each result adds successes and failures; by default a critical success adds 2 successes, a success 1, a failure and a critical failure 1 failure each. Change any of them.
+- What happens on success and on failure (GM only), and milestones along the way at a number of successes.
+- **Approaches**: the ways through you expect. Each has a name players see, which you keep free of spoilers ("Look for another way across"), the real story for you ("A gravel bar 200 feet upstream makes a shallower crossing"), an optional consequence on a critical failure, an optional limit on uses, and one or more skills, each with a DC. Reveal an approach with its eye when the players should know about it.
+- **Players see the counts**: off, and players see the approaches but not how close they are.
+- **Proposals need what and why**: on by default. Turn it off when pace matters, and players can propose with just a skill.
+- **One check per PC per round**: Apply tells you when a character rolls a second time in a round. It warns; it doesn't stop the roll.
+
+**Running it.** The challenge card has four buttons:
+
+- **Post skills** posts the skills that could help, from every approach, hidden ones included, with no approaches and no DCs. Players say what they do.
+- **Post options** posts the revealed approaches by their players' names, each with its skills as roll buttons.
+- **Check** calls for a check on the fly. Pick the characters, the skill and the DC, and what it counts as: one of your approaches (it counts a use) or on its own. Then send them a roll button each, or roll for them at once.
+- Rounds and End round show when the challenge has a round limit or one check per round.
+
+**Proposals.** Both chat cards, and the challenge in the players' window, have **Propose an approach**. A player picks one of their character's skills and writes what they do and why the skill fits. The proposal goes to chat for the table to see. On it you can change the skill, set the DC (Easy and Hard move it by 2), choose what it counts as, save it as a new approach for the challenge (players see it by what they wrote), and approve or decline it with a reason. Approved, it becomes a roll button for that player.
+
+The DC on a proposal or a check starts from an approach that uses the same skill, or else from the standard DC for the character's level.
+
+**What players see.** Never a DC: not in their window, not on the cards, not on their roll, which says only "Success" or "Failure". Every roll records through your Apply button as usual, and the challenge keeps a list of the results. A critical failure on an approach with a consequence shows it to you on the Apply box. As with everything here, DCs aren't secret from a player who digs through the browser console (see [Hidden until revealed](#hidden-until-revealed)).
+
+The DC filled in on a proposal or a check comes from a revealed approach that uses the same skill. Hidden approaches are never picked for you: choose one under "Counts as" when that's what the player has stumbled on.
+
 
 ## Reminders
 
@@ -149,7 +183,7 @@ game.modules.get("pf2e-campaign-trackers").api.registerPreset({
 })
 ```
 
-They are added hidden the first time. When the version changes, their text is updated and values, progress, ticks and reveals are kept. Tiers, thresholds, checks, segments and entries you added yourself stay (so do ones the preset dropped; remove those by hand). "Presets" at the bottom of the tab list reloads a preset's text by hand.
+They are added hidden the first time. When the version changes, their text is updated and values, progress, ticks and reveals are kept (for a skill challenge, its counts, the uses of each approach and the list of results). Tiers, thresholds, checks, segments and entries you added yourself stay (so do ones the preset dropped; remove those by hand). "Presets" at the bottom of the tab list reloads a preset's text by hand.
 
 ## For macros
 

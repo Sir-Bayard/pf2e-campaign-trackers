@@ -163,12 +163,59 @@
 .pct-chat .pct-req button { text-align: left; line-height: 1.3; padding: 3px 8px; }
 .pct-chat .pct-req button span { opacity: 0.8; font-size: 12px; }
 .pct-chat .pct-hint { opacity: 0.7; font-style: italic; font-size: 11px; margin: 2px 0 0; }
+.pct-chat .pct-opt { margin: 6px 0 2px; }
+.pct-chat .pct-req.pct-req-row { flex-direction: row; flex-wrap: wrap; }
+.pct-chat .pct-req.pct-req-row button { flex: 0 0 auto; width: auto; }
+.pct-chat .pct-skill-list { columns: 2; }
+.pct-chat .pct-k { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.7; margin-right: 2px; }
+.pct-chat .pct-propose { margin: 6px 0 0; }
+.pct-chat .pct-propose button { width: 100%; }
+.pct-chat .pct-prop-state { margin-top: 6px; padding-top: 6px; border-top: 1px dashed rgba(127, 127, 127, 0.5); }
+.pct-chat .pct-prop-gm { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.pct-chat .pct-prop-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.pct-chat .pct-prop-row label { display: inline-flex; align-items: center; gap: 4px; }
+.pct-chat .pct-prop-row select { width: auto; max-width: 150px; }
+.pct-chat .pct-prop-row input[type=number] { width: 48px; }
+.pct-chat .pct-prop-row input[type=text] { flex: 1; min-width: 100px; }
+.pct-chat .pct-prop-row button { flex: 0 0 auto; width: auto; line-height: 22px; padding: 0 6px; }
+.pct-chat .pct-prop-row button[data-act=approve] { flex: 1; }
+.pct-chat .pct-prop-ok i { color: #4f8a4b; }
+.pct-chat .pct-prop-no i { color: #a63d32; }
+.pct-chat .pct-adhoc-state { margin-top: 4px; }
+.pct-chat .pct-adhoc-done { display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; opacity: 0.8; }
+.pct-chat .pct-adhoc-done i { color: #4f8a4b; }
+.pct-adhoc-dialog .pct-pcs { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.pct-adhoc-dialog .pct-pcs label { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.pct-adhoc-dialog input[name=dc] { width: 60px; flex: 0 0 auto; }
+.pct-adhoc-dialog .form-fields button { flex: 0 0 auto; width: auto; }
 .pct-apply { margin-top: 6px; padding-top: 6px; border-top: 1px dashed rgba(127, 127, 127, 0.5); font-size: 12px; }
 .pct-apply button { width: 100%; line-height: 24px; }
 .pct-apply .pct-preview { opacity: 0.75; margin-top: 2px; }
+.pct-apply .pct-undo { margin-left: 6px; opacity: 0.75; cursor: pointer; white-space: nowrap; }
+.pct-apply .pct-undo:hover { opacity: 1; }
+.pct-apply .pct-undo.pct-busy { pointer-events: none; opacity: 0.4; }
+.pct-apply p.pct-preview { margin: 0 0 4px; }
 
 /* Pressure meter: one segment per band */
 .pct-app .pct-meter { display: flex; gap: 3px; height: 10px; }
 .pct-app .pct-band { background: var(--pct-soft); border-radius: 3px; overflow: hidden; outline: 1px solid var(--pct-line); }
 .pct-app .pct-band.pct-current { outline-color: var(--pct-accent); }
 .pct-app .pct-band > div { height: 100%; background: var(--pct-fill); }
+
+/* Skill challenges */
+.pct-app .pct-tally { display: flex; flex-wrap: wrap; gap: 4px 18px; }
+.pct-app .pct .pct-tally-row { display: inline-flex; align-items: center; gap: 6px; }
+.pct-app .pct .pct-pips { display: inline-flex; gap: 3px; font-size: 13px; }
+.pct-app .pct .pct-pips-ok .fa-solid { color: var(--pct-ok); }
+.pct-app .pct .pct-pips-bad .fa-solid { color: var(--pct-fill); }
+.pct-app .pct .pct-pips .fa-regular { opacity: 0.45; }
+.pct-app .pct .pct-status-won { border-color: var(--pct-ok); color: var(--pct-ok); }
+.pct-app .pct .pct-status-lost, .pct-app .pct .pct-status-time { border-color: var(--pct-fill); color: var(--pct-fill); }
+.pct-app .pct .pct-approach .pct-checks { flex-direction: row; flex-wrap: wrap; gap: 4px 10px; }
+.pct-app .pct-cdeg { width: auto; align-self: flex-start; margin: 0; border: none; background: none; font-size: 12px; }
+.pct-app .pct-cdeg th, .pct-app .pct-cdeg td { padding: 1px 8px 1px 0; text-align: left; font-weight: normal; border: none; background: none; }
+.pct-app .pct-cdeg thead th { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.7; }
+.pct-app .pct-cdeg tbody th { opacity: 0.85; }
+.pct-app .pct-log summary { cursor: pointer; font-size: 12px; opacity: 0.8; }
+.pct-app .pct-log li { padding: 1px 0; font-size: 12px; }
+.pct-app .pct .pct-push { margin-left: auto; display: inline-flex; gap: 6px; }

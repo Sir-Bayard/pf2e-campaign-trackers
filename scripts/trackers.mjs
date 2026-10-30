@@ -14,11 +14,12 @@ const MOD = "pf2e-campaign-trackers";
 /** Flag scope for the data journal and chat cards. */
 const SCOPE = MOD;
 
-const KINDS = ["reputation", "pressure", "points", "influence", "research", "chase", "infiltration", "clock", "checklist"];
+const KINDS = ["reputation", "pressure", "points", "challenge", "influence", "research", "chase", "infiltration", "clock", "checklist"];
 const KIND_INFO = {
   reputation: { label: "Reputation", tab: "Reputation", icon: "fa-solid fa-scale-balanced", blurb: "How a group regards the party, in named tiers. GM Core's Reputation subsystem, or your own tiers." },
   pressure: { label: "Pressure track", tab: "Pressure", icon: "fa-solid fa-gauge-high", blurb: "Something building against the party, in named bands: heat, alarm, suspicion, doom. You move it by judgment; it has no checks." },
   points: { label: "Victory Points", tab: "Victory Points", icon: "fa-solid fa-flag-checkered", blurb: "Progress the party earns with checks toward a goal, with thresholds along the way." },
+  challenge: { label: "Skill challenge", tab: "Skill Challenges", icon: "fa-solid fa-route", blurb: "A goal the party reaches with a number of successes before too many failures. List the approaches you expect, each with a spoiler-free name for players, and approve the ones they think of." },
   influence: { label: "Influence", tab: "Influence", icon: "fa-solid fa-comments", blurb: "Winning someone over across a few rounds of conversation (GM Core)." },
   research: { label: "Research", tab: "Research", icon: "fa-solid fa-book-open", blurb: "Digging through a library or archive for what it can tell (GM Core)." },
   chase: { label: "Chase", tab: "Chases", icon: "fa-solid fa-person-running", blurb: "A pursuit through a run of obstacles (GM Core)." },
@@ -30,6 +31,8 @@ const KIND_INFO = {
 const DEGREES = ["criticalSuccess", "success", "failure", "criticalFailure"];
 const DEGREE_LABEL = { criticalSuccess: "Critical Success", success: "Success", failure: "Failure", criticalFailure: "Critical Failure" };
 const DEG = () => ({ criticalSuccess: 2, success: 1, failure: 0, criticalFailure: -1 });
+/** What each result adds to a skill challenge: s successes and f failures. */
+const CDEG = () => ({ criticalSuccess: { s: 2, f: 0 }, success: { s: 1, f: 0 }, failure: { s: 0, f: 1 }, criticalFailure: { s: 0, f: 1 } });
 
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -56,6 +59,8 @@ const TPL = {
   iobstacle: () => ({ id: uid(), name: "", points: 1, type: "group", progress: 0, byActor: {}, text: "", checks: [], revealed: false }),
   complication: () => ({ id: uid(), name: "", trigger: "", text: "", checks: [], done: false, revealed: false }),
   opportunity: () => ({ id: uid(), name: "", text: "", checks: [], done: false, revealed: false }),
+  approach: () => ({ id: uid(), label: "", gm: "", critFail: "", uses: null, used: 0, checks: [], revealed: false }),
+  adhoc: () => ({ id: uid(), skill: "", dc: null, label: "", approach: null }),
   segment: () => ({ id: uid(), label: "", date: null, text: "", state: "empty", reminded: null }),
   entry: () => ({ id: uid(), group: "", label: "", detail: "", effect: "", closes: null, tag: "", done: false, revealed: false, reminded: null }),
 };
@@ -65,6 +70,7 @@ const LISTS = {
   reputation: { tiers: "tier" },
   pressure: { tiers: "tier", thresholds: "threshold" },
   points: { thresholds: "threshold", checks: "check" },
+  challenge: { thresholds: "threshold", approaches: "approach", "approaches.checks": "check", adhoc: "adhoc" },
   influence: { thresholds: "threshold", skills: "check", discovery: "check", resistances: "note", weaknesses: "note" },
   research: { thresholds: "threshold", checks: "rcheck" },
   chase: { obstacles: "obstacle", "obstacles.checks": "check" },
@@ -112,6 +118,8 @@ function blank(kind, name) {
       return { ...base, value: 0, min: 0, max: 10, showValue: false, halve: true, steps: [1], tiers: PRESSURE_BANDS(), thresholds: [] };
     case "points":
       return { ...base, value: 0, min: 0, max: 10, showValue: true, halve: false, thresholds: [], checks: [], degrees: DEG() };
+    case "challenge":
+      return { ...base, successes: 0, failures: 0, goal: 4, limit: 3, rounds: null, round: 1, showCount: true, explain: true, oncePerRound: false, degrees: CDEG(), onSuccess: "", onFailure: "", thresholds: [], approaches: [], log: [] };
     case "influence":
       return { ...base, npc: null, value: 0, rounds: 3, roundsUsed: 0, thresholds: [], skills: [], discovery: [], resistances: [], weaknesses: [], penalty: "", degrees: DEG() };
     case "research":
@@ -137,7 +145,11 @@ function normalize(raw) {
     if (path.includes(".")) continue;
     t[path] = (Array.isArray(t[path]) ? t[path] : []).map((row) => fillRow(kind, path, row, tpl));
   }
-  if (t.degrees) t.degrees = { ...DEG(), ...t.degrees };
+  if (kind === "challenge") {
+    const raw = t.degrees ?? {};
+    t.degrees = Object.fromEntries(Object.entries(CDEG()).map(([d, def]) => [d, { s: num(raw[d]?.s, def.s), f: num(raw[d]?.f, def.f) }]));
+    t.log = Array.isArray(t.log) ? t.log : [];
+  } else if (t.degrees) t.degrees = { ...DEG(), ...t.degrees };
   if (kind === "chase") t.quarry = { enabled: true, label: "Quarry", at: 1, ...(t.quarry ?? {}) };
   return t;
 }
@@ -193,9 +205,23 @@ function infiltrationIP(t) {
   return total;
 }
 
+/** Where a skill challenge stands: "won", "lost", "time" (out of rounds) or "" while it runs. */
+function challengeStatus(t) {
+  const goal = nullNum(t.goal), limit = nullNum(t.limit), rounds = nullNum(t.rounds);
+  if (goal !== null && goal > 0 && num(t.successes) >= goal) return "won";
+  if (limit !== null && limit > 0 && num(t.failures) >= limit) return "lost";
+  if (rounds !== null && rounds > 0 && num(t.round) > rounds) return "time";
+  return "";
+}
+const STATUS_TEXT = { won: "Succeeded", lost: "Failed", time: "Out of time" };
+
 /** A one-line summary for the card header. */
 function summary(t) {
   switch (t.kind) {
+    case "challenge": {
+      const goal = nullNum(t.goal), limit = nullNum(t.limit), st = challengeStatus(t);
+      return `${num(t.successes)}${goal ? ` of ${goal}` : ""} successes, ${num(t.failures)}${limit ? ` of ${limit}` : ""} failures${st ? `. ${STATUS_TEXT[st]}` : ""}`;
+    }
     case "reputation": {
       const tier = currentTier(t);
       return `${tier?.label ?? "No tiers"} (${signed(num(t.value))})`;
@@ -341,14 +367,16 @@ const Store = {
    * same GM in another tab), the data is reloaded instead of overwritten.
    */
   async save() {
-    if (!game.user.isGM) return;
+    if (!game.user.isGM) return false;
     if (this.writing) {
       this.pending = true;
       return this.writing;
     }
     this.writing = (async () => {
+      let ok = false;
       do {
         this.pending = false;
+        ok = false;
         try {
           if (this.broken) throw new Error("the stored data couldn't be read; export it, fix it, then import it");
           if (!this.journal || !game.journal.get(this.journal.id)) await this.ensure();
@@ -358,7 +386,7 @@ const Store = {
             this.load();
             refresh();
             ui.notifications.warn("Campaign Trackers: another window saved newer data, so this one has reloaded it instead of overwriting. Make your change again.");
-            return;
+            return false;
           }
           this.data.rev = this.rev + 1;
           const json = JSON.stringify(this.data);
@@ -370,15 +398,17 @@ const Store = {
             throw err;
           }
           await publish(this.data);
+          ok = true;
         } catch (err) {
           console.error(`${MOD} | save failed`, err);
           ui.notifications.error(`Campaign Trackers: couldn't save (${err.message}). The change is only in this window; export your data from the window menu before reloading.`);
-          return;
+          return false;
         }
       } while (this.pending);
+      return ok;
     })();
     try {
-      await this.writing;
+      return await this.writing;
     } finally {
       this.writing = null;
     }
@@ -397,8 +427,9 @@ const Store = {
 };
 
 /**
- * Change the data. The function gets a copy to change and can return a value. Notices about
- * thresholds crossed and tiers changed are whispered to the GM.
+ * Change the data. The function gets a copy to change and can return a value, which comes back
+ * only when the change was saved (undefined otherwise). Notices about thresholds crossed and tiers
+ * changed are whispered to the GM.
  */
 async function mutate(fn, { notify = true } = {}) {
   if (!game.user.isGM) return;
@@ -417,8 +448,7 @@ async function mutate(fn, { notify = true } = {}) {
     }
     if (lines.length) whisperGM(lines, "fa-solid fa-bullhorn");
   }
-  await Store.save();
-  return result;
+  return (await Store.save()) ? result : undefined;
 }
 
 const mutateTracker = (id, fn, opts) => mutate((d) => {
@@ -453,6 +483,17 @@ function notices(a, b) {
     case "research":
       crossed(b.thresholds, a.value, b.value, b.kind === "influence" ? "influence" : b.kind === "research" ? "research points" : "");
       break;
+    case "challenge": {
+      for (const th of b.thresholds ?? []) {
+        if (num(a.successes) < num(th.at) && num(b.successes) >= num(th.at)) out.push(`<strong>${n}</strong> reached ${th.at} ${num(th.at) === 1 ? "success" : "successes"}${th.text ? `: ${para(th.text)}` : "."}`);
+      }
+      const sa = challengeStatus(a), sb = challengeStatus(b);
+      if (sb && sb !== sa) {
+        const text = sb === "won" ? b.onSuccess : b.onFailure;
+        out.push(`<strong>${n}</strong>: ${sb === "won" ? "the party succeeded" : sb === "lost" ? "the party failed" : "the party ran out of time"}${text ? `. ${para(text)}` : "."}`);
+      }
+      break;
+    }
     case "infiltration":
       crossed(b.awarenessThresholds, a.awareness, b.awareness, "awareness");
       break;
@@ -494,6 +535,23 @@ function project(t, { force = false } = {}) {
     }
     case "points":
       return { ...p, value: t.showValue ? num(t.value) : null, max: t.showValue ? nullNum(t.max) : null, thresholds: reached(shown(t.thresholds), t.value).map(({ at, text, reached: r }) => ({ at: t.showValue ? at : null, text, reached: r })), checks: shown(t.checks).map(pubCheck) };
+    case "challenge": {
+      // Players get the approaches by their spoiler-free names. The DC travels with each check so a
+      // player's roll can be graded, but nothing in the players' window or cards prints it.
+      const show = !!t.showCount;
+      return {
+        ...p,
+        successes: show ? num(t.successes) : null, failures: show ? num(t.failures) : null,
+        goal: show ? nullNum(t.goal) : null, limit: show ? nullNum(t.limit) : null,
+        round: num(t.round), rounds: nullNum(t.rounds), status: challengeStatus(t), explain: t.explain !== false,
+        thresholds: reached(shown(t.thresholds), t.successes).filter((x) => x.reached).map(({ text }) => ({ at: null, text, reached: true })),
+        approaches: shown(t.approaches).map((a) => ({
+          id: a.id, label: a.label,
+          left: nullNum(a.uses) !== null ? Math.max(0, num(a.uses) - num(a.used)) : null,
+          checks: a.checks.filter((c) => c.skill).map((c) => ({ id: c.id, skill: c.skill, dc: c.dc, label: "" })),
+        })),
+      };
+    }
     case "influence":
       return { ...p, npc: t.npc ? { name: t.npc.name, img: t.npc.img } : null, value: num(t.value), rounds: num(t.rounds), roundsUsed: num(t.roundsUsed), thresholds: reached(shown(t.thresholds), t.value).map(({ at, text, reached: r }) => ({ at, text, reached: r })), skills: shown(t.skills).map(pubCheck), discovery: shown(t.discovery).map(pubCheck), resistances: shown(t.resistances).map((x) => x.text), weaknesses: shown(t.weaknesses).map((x) => x.text) };
     case "research":
@@ -532,7 +590,7 @@ const presets = new Map();
 let storeReady = false;
 
 /** Fields that belong to play, kept when a preset's text is updated. */
-const STATE_KEYS = new Set(["value", "revealed", "round", "current", "awareness", "edge", "roundsUsed", "progress", "byActor", "done", "state", "earned", "reminded", "showValue", "showAwareness", "showLabels", "npc"]);
+const STATE_KEYS = new Set(["value", "revealed", "round", "current", "awareness", "edge", "roundsUsed", "progress", "byActor", "done", "state", "earned", "reminded", "showValue", "showAwareness", "showLabels", "npc", "successes", "failures", "used", "log", "showCount", "adhoc"]);
 
 /**
  * Copy play state from an old copy of a tracker into a fresh one from a preset. Rows in a list
@@ -588,7 +646,7 @@ async function syncPresets({ force = false, only = null } = {}) {
     if (only && preset.id !== only) continue;
     const have = Store.data.presets?.[preset.id];
     if (have && have.version === preset.version && !force) continue;
-    const { added, updated } = await mutate((d) => mergePreset(d, preset), { notify: false });
+    const { added, updated } = (await mutate((d) => mergePreset(d, preset), { notify: false })) ?? {};
     const what = [added && `${added} added`, updated && `${updated} updated`].filter(Boolean).join(", ");
     ui.notifications.info(`Campaign Trackers: ${preset.label} preset ${have ? "updated" : "loaded"} (${what || "no trackers"}). New trackers start hidden from players.`);
   }
@@ -635,18 +693,24 @@ function rollers() {
   return game.user.character ? [game.user.character] : [];
 }
 
-async function rollCheck({ tid, target, check, title }) {
+async function rollCheck({ tid, target, check, title, hideDC = false }) {
   const actors = rollers();
   if (!actors.length) return ui.notifications.warn(game.user.isGM ? "Select the tokens of the characters who are rolling." : "Select your token, or ask the GM to assign you a character.");
-  for (const actor of actors) {
-    const stat = actor.getStatistic?.(String(check.skill || "").toLowerCase());
-    if (!stat) {
-      ui.notifications.warn(`${actor.name} has no ${skillLabel(check.skill)} to roll.`);
-      continue;
-    }
-    const dc = Number.isFinite(Number(check.dc)) && check.dc !== null && check.dc !== "" ? { value: Number(check.dc) } : undefined;
-    await stat.roll({ dc, label: title, extraRollOptions: [rollTag(tid, target, check.id)] });
+  for (const actor of actors) await rollAs(actor, { tid, target, check, title, hideDC });
+}
+
+/** A roll option on rolls whose DC players must not see, whatever the world's "show check DCs" setting. */
+const HIDE_DC = "pct-hide-dc";
+
+/** Roll one actor's check, tagged for a tracker. Returns the roll, or null if there was none. */
+async function rollAs(actor, { tid, target, check, title, hideDC = false }) {
+  const stat = actor.getStatistic?.(String(check.skill || "").toLowerCase());
+  if (!stat) {
+    ui.notifications.warn(`${actor.name} has no ${skillLabel(check.skill)} to roll.`);
+    return null;
   }
+  const dc = Number.isFinite(Number(check.dc)) && check.dc !== null && check.dc !== "" ? { value: Number(check.dc), ...(hideDC ? { visible: false } : {}) } : undefined;
+  return (await stat.roll({ dc, label: title, extraRollOptions: [rollTag(tid, target, check.id), ...(hideDC ? [HIDE_DC] : [])] })) ?? null;
 }
 
 /** The thing a roll targets inside a tracker, and the checks it offers. */
@@ -656,10 +720,27 @@ function locate(t, target) {
   if (!found) return null;
   const list = found.list;
   const row = found.row;
+  if (list === "approaches") return { type: "approach", obj: row, checks: row.checks ?? [], name: row.label || "" };
+  if (list === "adhoc") {
+    // A check the GM called on the fly: it counts as an approach when the GM linked one.
+    const linked = row.approach ? (t.approaches ?? []).find((a) => a.id === row.approach) : null;
+    const checks = [{ id: row.id, skill: row.skill }];
+    if (linked) return { type: "approach", obj: linked, checks, name: linked.label || "" };
+    return { type: "adhoc", obj: row, checks, name: row.label || skillLabel(row.skill) };
+  }
   if (["obstacles", "complications", "opportunities"].includes(list)) return { type: list.slice(0, -1), obj: row, checks: row.checks ?? [], name: row.name, index: Number(found.path.split(".")[1]) };
   if (["skills", "discovery", "checks"].includes(list)) return { type: list === "discovery" ? "discover" : "check", obj: row, checks: [row], name: row.label || skillLabel(row.skill) };
   return null;
 }
+
+/** Text cut to a length for titles and labels. */
+const shortText = (s, n = 60) => {
+  const x = String(s ?? "").replace(/\s+/g, " ").trim();
+  if (x.length <= n) return x;
+  const cut = x.slice(0, n);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > n / 2 ? cut.slice(0, space) : cut).replace(/[\s,.;:]+$/, "")}...`;
+};
 
 /** The roll title on the card: tracker name and what the check is for. */
 function rollTitle(t, target) {
@@ -668,13 +749,42 @@ function rollTitle(t, target) {
 }
 
 /**
+ * A skill challenge roll: add the result's successes and failures, count a use of the approach,
+ * and log it. Returns the line for the roll card.
+ */
+function applyChallenge(t, where, { outcome, actorId, logName, skill }) {
+  const d = t.degrees?.[outcome] ?? CDEG()[outcome];
+  const s = num(d.s), f = num(d.f);
+  const before = challengeStatus(t);
+  t.successes = Math.max(0, num(t.successes) + s);
+  t.failures = Math.max(0, num(t.failures) + f);
+  const again = !!t.oncePerRound && !!actorId && (t.log ?? []).some((x) => x.actorId === actorId && num(x.round) === num(t.round));
+  const a = where.type === "approach" ? where.obj : null;
+  if (a) a.used = num(a.used) + 1;
+  const over = a && nullNum(a.uses) !== null && num(a.used) > num(a.uses);
+  const what = a ? a.label || "an approach" : where.name || "a check";
+  t.log = [...(t.log ?? []), { id: uid(), round: num(t.round), actorId: actorId ?? null, name: logName || "", approach: a?.id ?? null, what, skill: skill || "", outcome, s, f }].slice(-50);
+  const goal = nullNum(t.goal), limit = nullNum(t.limit);
+  const parts = [];
+  if (s) parts.push(`${signed(s)} ${s === 1 || s === -1 ? "success" : "successes"} (${num(t.successes)}${goal ? ` of ${goal}` : ""})`);
+  if (f) parts.push(`${signed(f)} ${f === 1 || f === -1 ? "failure" : "failures"} (${num(t.failures)}${limit ? ` of ${limit}` : ""})`);
+  let line = `${logName ? `${logName}: ` : ""}${DEGREE_LABEL[outcome]} at ${what}, ${parts.join(" and ") || "no change"}.`;
+  const after = challengeStatus(t);
+  if (after && after !== before) line += ` ${STATUS_TEXT[after]}.`;
+  if (again) line += ` ${logName || "They"} already rolled this round.`;
+  if (over) line += ` That is past its limit of ${num(a.uses)} ${num(a.uses) === 1 ? "use" : "uses"}.`;
+  return line;
+}
+
+/**
  * Apply a roll's degree of success to a tracker. Changes the tracker in place and returns a line
  * saying what happened, or null if the roll doesn't apply.
  */
-function applyRoll(t, { target, outcome, actorId = null, actorName = "" }) {
+function applyRoll(t, { target, outcome, actorId = null, actorName = "", logName = "", skill = "" }) {
   if (!DEGREES.includes(outcome)) return null;
   const where = locate(t, target);
   if (!where) return null;
+  if (t.kind === "challenge") return applyChallenge(t, where, { outcome, actorId, logName, skill });
   const deg = num(t.degrees?.[outcome], DEG()[outcome]);
   const res = DEGREE_LABEL[outcome];
   const who = actorName ? `${actorName}: ` : "";
@@ -795,6 +905,450 @@ async function postCheckCard(t, { target = null, list = null } = {}) {
   });
 }
 
+/** The skills a challenge's approaches use, each once, in the order they first appear. */
+function challengeSkills(t) {
+  return [...new Set(t.approaches.flatMap((a) => a.checks.map((c) => String(c.skill || "").trim().toLowerCase()).filter(Boolean)))];
+}
+
+/**
+ * Post a skill challenge to chat. "skills" lists every skill its approaches use, hidden ones
+ * included, with no buttons and no DCs: players say what they do. "options" lists the revealed
+ * approaches by their players' names, each with its skills as roll buttons (no DCs shown).
+ */
+async function postChallengeCard(t, mode) {
+  const head = `<header><i class="${KIND_INFO.challenge.icon}"></i> <strong>${esc(t.name)}</strong></header>`;
+  const desc = t.desc ? `<p>${para(t.desc)}</p>` : "";
+  const speaker = { alias: KIND_INFO.challenge.label };
+  if (mode === "skills") {
+    const skills = challengeSkills(t);
+    if (!skills.length) return ui.notifications.warn("Give the approaches some skills first.");
+    return ChatMessage.create({
+      content: `<div class="pct-chat pct-challenge">${head}${desc}<p>Skills that could help:</p><ul class="pct-skill-list">${skills.map((x) => `<li>${esc(skillLabel(x))}</li>`).join("")}</ul><p class="pct-hint">Say what your character does, and why the skill fits.</p>${PROPOSE_BTN(t.id)}</div>`,
+      speaker,
+      flags: { [SCOPE]: { challenge: { tid: t.id, mode, name: t.name, explain: t.explain !== false } } },
+    });
+  }
+  const open = shown(t.approaches).filter((a) => a.checks.some((c) => c.skill) && !(nullNum(a.uses) !== null && num(a.used) >= num(a.uses)));
+  if (!open.length) return ui.notifications.warn("Reveal at least one approach with a skill first. Only revealed approaches are posted.");
+  const checks = [];
+  const blocks = open.map((a) => {
+    const title = a.label ? `${t.name}: ${a.label}` : t.name;
+    const mine = a.checks.filter((c) => c.skill).map((c) => ({ id: c.id, skill: c.skill, dc: c.dc, label: "", target: a.id, title }));
+    checks.push(...mine);
+    const left = nullNum(a.uses) !== null ? Math.max(0, num(a.uses) - num(a.used)) : null;
+    return `<div class="pct-opt"><strong>${esc(a.label || "Another way")}</strong>${left !== null ? ` <span class="pct-hint">${left} ${left === 1 ? "use" : "uses"} left</span>` : ""}<div class="pct-req pct-req-row">${mine.map((c) => `<button type="button" data-pct-roll="${esc(c.id)}"><i class="fa-solid fa-dice-d20"></i> ${esc(skillLabel(c.skill))}</button>`).join("")}</div></div>`;
+  }).join("");
+  return ChatMessage.create({
+    content: `<div class="pct-chat pct-request pct-challenge">${head}${desc}${blocks}<p class="pct-hint">Select your token and click a skill to roll it, or propose something else.</p>${PROPOSE_BTN(t.id)}</div>`,
+    speaker,
+    flags: { [SCOPE]: { challenge: { tid: t.id, mode, name: t.name, explain: t.explain !== false }, request: { tid: t.id, title: t.name, hideDC: true, checks } } },
+  });
+}
+
+/** The standard DC for each level, 0 to 25. */
+const LEVEL_DC = [14, 15, 16, 18, 19, 20, 22, 23, 24, 26, 27, 28, 30, 31, 32, 34, 35, 36, 38, 39, 40, 42, 44, 46, 48, 50];
+const levelDC = (level) => LEVEL_DC[clamp(Math.round(num(level)), 0, LEVEL_DC.length - 1)];
+
+/** An actor's skills as [slug, label], Perception first, lores included. */
+function actorSkills(actor) {
+  const out = [];
+  if (actor?.perception) out.push(["perception", "Perception"]);
+  for (const st of Object.values(actor?.skills ?? {})) if (st?.slug) out.push([st.slug, st.label ?? skillLabel(st.slug)]);
+  return out;
+}
+
+const PROPOSE_BTN = (tid) => `<p class="pct-propose"><button type="button" data-pct-propose="${esc(tid)}"><i class="fa-solid fa-lightbulb"></i> Propose an approach</button></p>`;
+
+/**
+ * A player proposes an approach to a skill challenge: a skill of their character, what they do and
+ * why the skill fits. It goes to chat as a card the GM approves or declines.
+ */
+async function proposeDialog(tid, fallback = {}) {
+  const t = visibleTrackers().find((x) => x.id === tid);
+  const name = t?.name ?? fallback.name ?? KIND_INFO.challenge.label;
+  const explain = (t ? t.explain : fallback.explain) !== false;
+  const actor = rollers()[0];
+  if (!actor) return ui.notifications.warn(game.user.isGM ? "Select the token of the character who is proposing." : "Select your token, or ask the GM to assign you a character.");
+  const skills = actorSkills(actor);
+  if (!skills.length) return ui.notifications.warn(`${actor.name} has no skills to propose with.`);
+  const opt = explain ? "" : " (optional)";
+  let v = { skill: skills.find(([x]) => x !== "perception")?.[0] ?? skills[0][0], what: "", why: "" };
+  for (;;) {
+    const res = await foundry.applications.api.DialogV2.wait({
+      window: { title: `Propose: ${name}` },
+      classes: ["pct-propose-dialog"],
+      content: `<p>Proposing for <strong>${esc(pcName(actor))}</strong>.</p>
+        <div class="form-group"><label>Skill</label><select name="skill">${skills.map(([x, l]) => `<option value="${esc(x)}" ${x === v.skill ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></div>
+        <div class="form-group stacked"><label>What do you do?${opt}</label><textarea name="what" rows="2">${esc(v.what)}</textarea></div>
+        <div class="form-group stacked"><label>Why does this skill fit?${opt}</label><textarea name="why" rows="2">${esc(v.why)}</textarea></div>`,
+      buttons: [
+        { action: "send", label: "Propose", icon: "fa-solid fa-lightbulb", default: true, callback: (ev, button) => {
+          const f = button.form.elements;
+          return { skill: f.skill.value, what: f.what.value.trim(), why: f.why.value.trim() };
+        } },
+        { action: "cancel", label: "Cancel" },
+      ],
+      rejectClose: false,
+    });
+    if (!res || res === "cancel" || typeof res !== "object") return;
+    v = res;
+    if (explain && (!v.what || !v.why)) {
+      ui.notifications.warn("Say what your character does, and why the skill fits.");
+      continue;
+    }
+    break;
+  }
+  await ChatMessage.create({
+    content: `<div class="pct-chat pct-proposal"><header><i class="fa-solid fa-lightbulb"></i> <strong>${esc(name)}</strong></header>
+      <p><span class="pct-k">Proposes</span> <strong>${esc(skillLabel(v.skill))}</strong></p>
+      ${v.what ? `<p>${para(v.what)}</p>` : ""}${v.why ? `<p><span class="pct-k">Why</span> ${para(v.why)}</p>` : ""}
+      <div class="pct-prop-state"></div></div>`,
+    speaker: ChatMessage.getSpeaker({ actor }),
+    flags: { [SCOPE]: { proposal: { tid, actorId: actor.id, userId: game.user.id, skill: v.skill, what: v.what, why: v.why, status: "pending" } } },
+  });
+}
+
+/** The live part of a proposal card: the GM's controls while it waits, then the roll button or the answer. */
+function renderProposal(message, prop, root) {
+  const box = root.querySelector(".pct-prop-state");
+  if (!box) return;
+  const actor = game.actors.get(prop.actorId) ?? null;
+  const skill = prop.finalSkill || prop.skill;
+  if (prop.status === "declined") {
+    box.innerHTML = `<p class="pct-prop-no"><i class="fa-solid fa-xmark"></i> Not this time${prop.reason ? `: ${esc(prop.reason)}` : "."}</p>`;
+    return;
+  }
+  if (prop.status === "approved") {
+    const swapped = skill !== prop.skill ? ` as <strong>${esc(skillLabel(skill))}</strong>` : "";
+    const dc = game.user.isGM && prop.dc !== null && prop.dc !== undefined ? ` <span class="pct-hint">DC ${esc(prop.dc)}</span>` : "";
+    if (prop.rolled) {
+      box.innerHTML = `<p class="pct-prop-ok"><i class="fa-solid fa-check"></i> Approved${swapped}. Rolled.${dc}</p>`;
+      return;
+    }
+    const can = game.user.isGM || actor?.isOwner;
+    box.innerHTML = `<p class="pct-prop-ok"><i class="fa-solid fa-check"></i> Approved${swapped}.${dc}</p>${can ? `<div class="pct-req"><button type="button" data-pct-prop-roll><i class="fa-solid fa-dice-d20"></i> Roll ${esc(skillLabel(skill))}${actor ? ` for ${esc(pcName(actor))}` : ""}</button></div>` : ""}`;
+    box.querySelector("[data-pct-prop-roll]")?.addEventListener("click", async (ev) => {
+      ev.preventDefault();
+      if (!actor) return ui.notifications.warn("The character who proposed this no longer exists.");
+      const b = ev.currentTarget;
+      b.disabled = true;
+      const roll = await rollAs(actor, { tid: prop.tid, target: prop.target, check: { id: prop.checkId, skill, dc: prop.dc }, title: prop.title, hideDC: true });
+      // The active GM marks the card rolled when the roll arrives (see createChatMessage below).
+      if (!roll) b.disabled = false;
+    });
+    return;
+  }
+  if (!game.user.isGM) {
+    box.innerHTML = `<p class="pct-hint">Waiting for the GM.</p>`;
+    return;
+  }
+  box.replaceChildren(proposalControls(message, prop, actor));
+}
+
+/** The GM's controls on a waiting proposal: skill, DC, which approach it counts as, approve or decline. */
+function proposalControls(message, prop, actor) {
+  const el = document.createElement("div");
+  el.className = "pct-prop-gm";
+  const t = Store.get(prop.tid);
+  if (!t) {
+    el.innerHTML = `<p class="pct-hint">That skill challenge no longer exists.</p>`;
+    return el;
+  }
+  const skills = actorSkills(actor);
+  if (!skills.some(([x]) => x === prop.skill)) skills.unshift([prop.skill, skillLabel(prop.skill)]);
+  el.innerHTML = `<div class="pct-prop-row"><label>Skill <select name="skill">${skills.map(([x, l]) => `<option value="${esc(x)}" ${x === prop.skill ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></label>
+      <label>DC <input type="number" name="dc"></label>
+      <button type="button" data-adj="-2" data-tooltip="Easy: 2 lower">Easy</button><button type="button" data-adj="2" data-tooltip="Hard: 2 higher">Hard</button></div>
+    <div class="pct-prop-row"><label>Counts as <select name="approach"><option value="">On its own</option>${t.approaches.map((a) => `<option value="${esc(a.id)}">${esc(a.label || "Unnamed approach")}${a.revealed ? "" : " (hidden)"}</option>`).join("")}</select></label>
+      <label class="pct-prop-save" data-tooltip="Add it to the challenge's approaches, shown to players by what they wrote"><input type="checkbox" name="save"> Save as an approach</label></div>
+    <div class="pct-prop-row"><button type="button" data-act="approve"><i class="fa-solid fa-check"></i> Approve</button></div>
+    <div class="pct-prop-row"><input type="text" name="reason" placeholder="Reason, if you decline (optional)"><button type="button" data-act="decline"><i class="fa-solid fa-xmark"></i> Decline</button></div>`;
+  const $ = (n) => el.querySelector(`[name="${n}"]`);
+  const sync = () => {
+    const linked = !!$("approach").value;
+    $("save").disabled = linked;
+    if (linked) $("save").checked = false;
+  };
+  // An approach that already uses the skill gives the DC and the link; otherwise the character's level does.
+  const prefill = () => {
+    const skill = $("skill").value;
+    const a = t.approaches.find((x) => x.revealed && x.checks.some((c) => String(c.skill).toLowerCase() === skill && c.dc !== null && c.dc !== ""));
+    const c = a?.checks.find((x) => String(x.skill).toLowerCase() === skill);
+    $("dc").value = c ? num(c.dc) : levelDC(actor?.level ?? 0);
+    $("approach").value = a?.id ?? "";
+    sync();
+  };
+  prefill();
+  $("skill").addEventListener("change", prefill);
+  $("approach").addEventListener("change", sync);
+  for (const b of el.querySelectorAll("[data-adj]")) b.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    $("dc").value = num($("dc").value) + Number(b.dataset.adj);
+  });
+  el.querySelector('[data-act="approve"]').addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.currentTarget.disabled = true;
+    const dc = $("dc").value === "" ? null : num($("dc").value);
+    const pick = { skill: $("skill").value, dc, approach: $("approach").value, save: $("save").checked };
+    onceFor(message, (m) => approveProposal(m, prop, pick));
+  });
+  el.querySelector('[data-act="decline"]').addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.currentTarget.disabled = true;
+    const reason = $("reason").value.trim();
+    onceFor(message, async (m) => {
+      if (m.getFlag(SCOPE, "proposal")?.status !== "pending") return;
+      await m.update({ [`flags.${SCOPE}.proposal`]: { ...prop, status: "declined", reason } });
+    });
+  });
+  return el;
+}
+
+/**
+ * Approve a proposal: link it to an approach, or save it as a new one, and open its roll. The roll
+ * targets a row in the GM's data (like a check called on the fly), so it applies even if the
+ * proposal is deleted, and nothing the player can edit on their own message decides what it counts as.
+ */
+async function approveProposal(message, prop, { skill, dc, approach, save }) {
+  const t = Store.get(prop.tid);
+  if (!t || !game.user.isGM) return;
+  if (message.getFlag(SCOPE, "proposal")?.status !== "pending") return;
+  const what = shortText(prop.what) || skillLabel(skill);
+  let linked = approach ? t.approaches.find((x) => x.id === approach) ?? null : null;
+  let added = null;
+  if (!linked && save) {
+    const who = pcName(game.actors.get(prop.actorId));
+    added = { ...TPL.approach(), label: what, gm: `Proposed by ${who}.${prop.why ? ` ${prop.why}` : ""}`, revealed: true, checks: [{ ...TPL.check(), skill, dc }] };
+  }
+  const row = { ...TPL.adhoc(), skill, dc, label: what, approach: (linked ?? added)?.id ?? null };
+  const ok = await mutateTracker(t.id, (tr) => {
+    if (added) tr.approaches.push(added);
+    tr.adhoc = [...(tr.adhoc ?? []), row].slice(-200);
+    return true;
+  }, { notify: false });
+  if (!ok) return;
+  // A hidden approach's name stays off the public roll card.
+  const title = `${t.name}: ${linked?.revealed && linked.label ? linked.label : what}`;
+  await message.update({ [`flags.${SCOPE}.proposal`]: { ...prop, status: "approved", finalSkill: skill, dc, target: row.id, checkId: row.id, title } });
+}
+
+/**
+ * The GM calls for a check on the fly: which characters, which skill, the DC (from a matching
+ * approach, else the highest chosen level), and what it counts as. Then a chat card with a roll
+ * button for each character, or the rolls at once.
+ */
+async function adhocDialog(t) {
+  const pcs = partyMembers();
+  if (!pcs.length) return ui.notifications.warn("There are no player characters to call a check for.");
+  const skills = new Map([["perception", "Perception"], ...SKILLS.filter((x) => !["perception", "fortitude", "reflex", "will"].includes(x)).map((x) => [x, skillLabel(x)])]);
+  for (const a of pcs) for (const [x, l] of actorSkills(a)) if (!skills.has(x)) skills.set(x, l);
+  const lc = (x) => String(x ?? "").trim().toLowerCase();
+  const controlled = (globalThis.canvas?.tokens?.controlled ?? []).map((x) => x.actor?.id).filter(Boolean);
+  let v = { pcs: new Set(pcs.filter((a) => controlled.includes(a.id)).map((a) => a.id)), skill: challengeSkills(t)[0] ?? "perception", dc: undefined, approach: "", what: "" };
+  for (;;) {
+    const read = (mode) => (ev, button) => {
+      const f = button.form;
+      return { mode, pcs: new Set([...f.querySelectorAll("input[name=pc]:checked")].map((i) => i.value)), skill: f.elements.skill.value, dc: f.elements.dc.value, approach: f.elements.approach.value, what: f.elements.what.value.trim() };
+    };
+    const res = await foundry.applications.api.DialogV2.wait({
+      window: { title: `Check: ${t.name}` },
+      classes: ["pct-adhoc-dialog"],
+      content: `<div class="form-group"><label>Who</label><div class="form-fields pct-pcs">${pcs.map((a) => `<label><input type="checkbox" name="pc" value="${esc(a.id)}" ${v.pcs.has(a.id) ? "checked" : ""}> ${esc(pcName(a))}</label>`).join("")}</div></div>
+        <div class="form-group"><label>Skill</label><select name="skill">${[...skills].map(([x, l]) => `<option value="${esc(x)}" ${x === v.skill ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></div>
+        <div class="form-group"><label>DC</label><div class="form-fields"><input type="number" name="dc" value="${esc(v.dc ?? "")}"><button type="button" data-adj="-2">Easy</button><button type="button" data-adj="2">Hard</button></div></div>
+        <div class="form-group"><label>Counts as</label><select name="approach"><option value="">On its own</option>${t.approaches.map((a) => `<option value="${esc(a.id)}" ${a.id === v.approach ? "selected" : ""}>${esc(a.label || "Unnamed approach")}${a.revealed ? "" : " (hidden)"}</option>`).join("")}</select></div>
+        <div class="form-group"><label>For</label><input type="text" name="what" value="${esc(v.what)}" placeholder="What they're doing (optional)"></div>
+        <p class="hint">Players see the result, not the DC.</p>`,
+      render: (ev, d) => {
+        const root = d instanceof HTMLElement ? d : d?.element;
+        if (!root) return;
+        const $ = (n) => root.querySelector(`[name="${n}"]`);
+        const prefill = (fromSkill) => {
+          const skill = $("skill").value;
+          const hasDC = (c) => lc(c.skill) === skill && c.dc !== null && c.dc !== "";
+          if (fromSkill) $("approach").value = t.approaches.find((a) => a.revealed && a.checks.some(hasDC))?.id ?? "";
+          const c = t.approaches.find((a) => a.id === $("approach").value)?.checks.find(hasDC);
+          const chosen = [...root.querySelectorAll("input[name=pc]:checked")].map((i) => game.actors.get(i.value));
+          const levels = (chosen.length ? chosen : pcs).map((a) => num(a?.level));
+          $("dc").value = c ? num(c.dc) : levelDC(Math.max(0, ...levels));
+        };
+        if (v.dc === undefined) prefill(true);
+        $("skill").addEventListener("change", () => prefill(true));
+        $("approach").addEventListener("change", () => prefill(false));
+        for (const i of root.querySelectorAll("input[name=pc]")) i.addEventListener("change", () => prefill(false));
+        for (const b of root.querySelectorAll("[data-adj]")) b.addEventListener("click", (e) => {
+          e.preventDefault();
+          $("dc").value = num($("dc").value) + Number(b.dataset.adj);
+        });
+      },
+      buttons: [
+        { action: "send", label: "Send to players", icon: "fa-solid fa-share-from-square", default: true, callback: read("send") },
+        { action: "roll", label: "Roll now", icon: "fa-solid fa-dice-d20", callback: read("roll") },
+        { action: "cancel", label: "Cancel" },
+      ],
+      rejectClose: false,
+    });
+    if (!res || typeof res !== "object") return;
+    v = res;
+    if (!v.pcs.size) {
+      ui.notifications.warn("Pick at least one character.");
+      continue;
+    }
+    break;
+  }
+  const dc = v.dc === "" ? null : num(v.dc);
+  const linked = t.approaches.find((a) => a.id === v.approach) ?? null;
+  const row = { ...TPL.adhoc(), skill: v.skill, dc, label: v.what, approach: linked?.id ?? null };
+  await mutateTracker(t.id, (tr) => {
+    tr.adhoc = [...(tr.adhoc ?? []), row].slice(-200);
+  }, { notify: false });
+  const title = `${t.name}: ${v.what ? shortText(v.what) : (linked?.revealed && linked.label) || skillLabel(v.skill)}`;
+  const ids = [...v.pcs];
+  if (v.mode === "roll") {
+    for (const id of ids) {
+      const actor = game.actors.get(id);
+      if (actor) await rollAs(actor, { tid: t.id, target: row.id, check: { id: row.id, skill: v.skill, dc }, title, hideDC: true });
+    }
+    return;
+  }
+  await ChatMessage.create({
+    content: `<div class="pct-chat pct-adhoc"><header><i class="${KIND_INFO.challenge.icon}"></i> <strong>${esc(t.name)}</strong></header>
+      <p><strong>${esc(skillLabel(v.skill))}</strong>${v.what ? `: ${esc(v.what)}` : ""}</p><div class="pct-adhoc-state"></div></div>`,
+    speaker: { alias: KIND_INFO.challenge.label },
+    flags: { [SCOPE]: { adhoc: { tid: t.id, row: row.id, actors: ids, skill: v.skill, dc, title, rolled: {} } } },
+  });
+}
+
+/** A check card from the GM: a roll button for each character, for that character's owner. */
+function renderAdhoc(message, ad, root) {
+  const box = root.querySelector(".pct-adhoc-state");
+  if (!box) return;
+  box.innerHTML = `${game.user.isGM && ad.dc !== null && ad.dc !== undefined ? `<p class="pct-hint">DC ${esc(ad.dc)}</p>` : ""}<div class="pct-req pct-req-row"></div>`;
+  const row = box.querySelector(".pct-req");
+  for (const id of ad.actors ?? []) {
+    const actor = game.actors.get(id);
+    const name = actor ? pcName(actor) : "?";
+    if (ad.rolled?.[id]) {
+      row.insertAdjacentHTML("beforeend", `<span class="pct-adhoc-done"><i class="fa-solid fa-check"></i> ${esc(name)}</span>`);
+    } else if (actor && (game.user.isGM || actor.isOwner)) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.innerHTML = `<i class="fa-solid fa-dice-d20"></i> ${esc(name)}`;
+      b.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        b.disabled = true;
+        const roll = await rollAs(actor, { tid: ad.tid, target: ad.row, check: { id: ad.row, skill: ad.skill, dc: ad.dc }, title: ad.title, hideDC: true });
+        if (!roll) b.disabled = false;
+      });
+      row.append(b);
+    } else {
+      row.insertAdjacentHTML("beforeend", `<span class="pct-hint">${esc(name)}</span>`);
+    }
+  }
+}
+
+/**
+ * What applying a roll changed in a tracker, so it can be undone without touching anything changed
+ * since: numbers as amounts, other values as from and to, rows added to a list by their id. A step
+ * through a list of rows is the row's id, so later reordering or trimming doesn't misplace it.
+ */
+function diffTracker(a, b, path = []) {
+  const out = [];
+  if (Array.isArray(b)) {
+    const old = Array.isArray(a) ? a : [];
+    if (!b.every((x) => x && typeof x === "object" && x.id)) return out;
+    for (const row of b) {
+      const was = old.find((x) => x?.id === row.id);
+      if (!was) out.push({ path, add: row.id });
+      else out.push(...diffTracker(was, row, [...path, { id: row.id }]));
+    }
+    return out;
+  }
+  if (b && typeof b === "object") {
+    for (const k of new Set([...Object.keys(a ?? {}), ...Object.keys(b)])) out.push(...diffTracker(a?.[k], b[k], [...path, k]));
+    return out;
+  }
+  if (a !== b && !(a === undefined && b === undefined)) out.push({ path, from: a ?? null, to: b ?? null });
+  return out;
+}
+
+function walkPath(obj, path) {
+  let at = obj;
+  for (const step of path) {
+    if (at == null) return undefined;
+    at = typeof step === "object" ? (Array.isArray(at) ? at.find((x) => x?.id === step.id) : undefined) : at[step];
+  }
+  return at;
+}
+
+/** Take back what diffTracker recorded: numbers by the amount they moved, the rest only if unchanged since. */
+function undoChanges(t, changes) {
+  for (const c of changes ?? []) {
+    if (c.add) {
+      const list = walkPath(t, c.path);
+      const i = Array.isArray(list) ? list.findIndex((x) => x?.id === c.add) : -1;
+      if (i >= 0) list.splice(i, 1);
+      continue;
+    }
+    const parent = walkPath(t, c.path.slice(0, -1));
+    const key = c.path.at(-1);
+    if (!parent || typeof parent !== "object" || typeof key === "object") continue;
+    if (typeof c.to === "number" && (c.from === null || typeof c.from === "number")) {
+      const back = num(parent[key]) - (c.to - num(c.from));
+      // Never past a field's limits: a plain field has its own; anything inside a row stops at 0.
+      const [lo, hi] = c.path.every((x) => typeof x === "string") ? bounds(t, c.path.join(".")) : [0, null];
+      if (c.from === null && back === 0) delete parent[key];
+      else parent[key] = clamp(back, lo, hi);
+    } else if (parent[key] === c.to) parent[key] = c.from;
+  }
+}
+
+/** An approach's GM-only consequence for a critical failure, shown on the GM's Apply box (never stored on the card). */
+function critFailNote(t, target, outcome) {
+  if (t?.kind !== "challenge" || outcome !== "criticalFailure") return "";
+  const where = locate(t, target);
+  return where?.type === "approach" ? String(where.obj.critFail ?? "").trim() : "";
+}
+
+/** Apply a roll and record what it changed. Returns { text, changes } or null. */
+function applyRecorded(tr, args) {
+  const before = clone(tr);
+  const text = applyRoll(tr, args);
+  return text ? { text, changes: diffTracker(before, tr) } : null;
+}
+
+/**
+ * A reroll (a hero point) deletes the roll card and posts a new one. When the first card had been
+ * applied, what it applied is kept here for a short while, so the new card can offer to replace it.
+ */
+const rerollStash = new Map();
+const rerollKey = (message) => {
+  const ctx = message.flags?.pf2e?.context;
+  const tag = ctx?.options?.find((o) => typeof o === "string" && o.startsWith(`${MOD}:`));
+  return tag ? `${tag}|${ctx.actor ?? ""}` : null;
+};
+function priorApplied(message) {
+  // Once replaced, the first roll's result is gone: an Undo after that leaves a plain Apply.
+  if (message.getFlag(SCOPE, "replaced")) return null;
+  const flagged = message.getFlag(SCOPE, "rerolled");
+  if (flagged) return flagged;
+  if (!message.flags?.pf2e?.context?.isReroll) return null;
+  const hit = rerollStash.get(rerollKey(message));
+  return hit && Date.now() - hit.at < 120000 ? hit : null;
+}
+
+/** Apply, Undo and Replace run one at a time per card, on the card as it is when the click lands. */
+const busyCards = new Set();
+async function onceFor(message, fn) {
+  if (busyCards.has(message.id)) return;
+  busyCards.add(message.id);
+  try {
+    await fn(game.messages?.get(message.id) ?? message);
+  } finally {
+    busyCards.delete(message.id);
+  }
+}
+
 /** Buttons on check cards, and the GM's Apply box on tagged roll cards. */
 function onRenderMessage(message, html) {
   const root = html instanceof HTMLElement ? html : html?.[0];
@@ -805,9 +1359,20 @@ function onRenderMessage(message, html) {
       b.addEventListener("click", (ev) => {
         ev.preventDefault();
         const check = req.checks.find((c) => c.id === b.dataset.pctRoll);
-        if (check) rollCheck({ tid: req.tid, target: check.target ?? req.target, check, title: req.title });
+        if (check) rollCheck({ tid: req.tid, target: check.target ?? req.target, check, title: check.title ?? req.title, hideDC: !!req.hideDC });
       });
     }
+  }
+  const prop = message.getFlag?.(SCOPE, "proposal");
+  if (prop) renderProposal(message, prop, root);
+  const ad = message.getFlag?.(SCOPE, "adhoc");
+  if (ad) renderAdhoc(message, ad, root);
+  for (const b of root.querySelectorAll("[data-pct-propose]")) {
+    b.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      const c = message.getFlag?.(SCOPE, "challenge") ?? {};
+      proposeDialog(b.dataset.pctPropose, { name: c.name, explain: c.explain });
+    });
   }
   if (!game.user.isGM) return;
   const ctx = message.flags?.pf2e?.context;
@@ -819,22 +1384,60 @@ function onRenderMessage(message, html) {
   box.className = "pct-apply";
   const applied = message.getFlag(SCOPE, "applied");
   const actor = ctx.actor ? game.actors.get(ctx.actor) : null;
-  const args = { target: tag.target, outcome: ctx.outcome, actorId: actor?.id ?? null, actorName: "" };
+  const args = { target: tag.target, outcome: ctx.outcome, actorId: actor?.id ?? null, actorName: "", logName: actor ? pcName(actor) : "", skill: locate(t, tag.target)?.checks?.find((c) => c.id === tag.checkId)?.skill ?? tag.checkId ?? "" };
+  const prior = applied ? null : priorApplied(message);
   if (applied) {
-    box.innerHTML = `<i class="fa-solid fa-check"></i> ${esc(applied.text)}`;
+    box.innerHTML = `<i class="fa-solid fa-check"></i> ${esc(applied.text)}${applied.changes ? ` <a class="pct-undo" data-tooltip="Take this result back off ${esc(t.name)}"><i class="fa-solid fa-rotate-left"></i> Undo</a>` : ""}`;
+    box.querySelector(".pct-undo")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.currentTarget.classList.add("pct-busy");
+      onceFor(message, async (m) => {
+        const now = m.getFlag(SCOPE, "applied");
+        if (!now?.changes) return;
+        const ok = await mutateTracker(t.id, (tr) => {
+          undoChanges(tr, now.changes);
+          return true;
+        });
+        if (ok) await m.unsetFlag(SCOPE, "applied");
+      });
+    });
   } else if (!ctx.outcome) {
     box.innerHTML = `<i class="fa-solid fa-circle-info"></i> No DC on this roll, so there is no result to apply to ${esc(t.name)}.`;
+  } else if (prior) {
+    // The roll before this reroll was applied: offer to swap its result for this one's.
+    const copy = clone(t);
+    undoChanges(copy, prior.changes);
+    const preview = applyRoll(copy, args);
+    if (!preview) return;
+    box.innerHTML = `<p class="pct-preview">The roll before this reroll was applied: ${esc(prior.text)}</p><button type="button"><i class="fa-solid fa-arrows-rotate"></i> Replace it with this roll</button><div class="pct-preview">${esc(preview)}</div>`;
+    box.querySelector("button").addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.currentTarget.disabled = true;
+      onceFor(message, async (m) => {
+        if (m.getFlag(SCOPE, "applied") || m.getFlag(SCOPE, "replaced")) return;
+        const done = await mutateTracker(t.id, (tr) => {
+          undoChanges(tr, prior.changes);
+          return applyRecorded(tr, args);
+        });
+        if (done) await m.update({ [`flags.${SCOPE}.applied`]: { text: `Replaced the first roll. ${done.text}`, changes: done.changes }, [`flags.${SCOPE}.replaced`]: true });
+      });
+    });
   } else {
     const preview = applyRoll(clone(t), args);
     if (!preview) return;
     box.innerHTML = `<button type="button"><i class="${KIND_INFO[t.kind].icon}"></i> Apply to ${esc(t.name)}</button><div class="pct-preview">${esc(preview)}</div>`;
-    box.querySelector("button").addEventListener("click", async (ev) => {
+    box.querySelector("button").addEventListener("click", (ev) => {
       ev.preventDefault();
       ev.currentTarget.disabled = true;
-      const text = await mutateTracker(t.id, (tr) => applyRoll(tr, args));
-      if (text) await message.setFlag(SCOPE, "applied", { text });
+      onceFor(message, async (m) => {
+        if (m.getFlag(SCOPE, "applied")) return;
+        const done = await mutateTracker(t.id, (tr) => applyRecorded(tr, args));
+        if (done) await m.setFlag(SCOPE, "applied", done);
+      });
     });
   }
+  const note = critFailNote(t, tag.target, ctx.outcome);
+  if (note) box.insertAdjacentHTML("beforeend", `<div class="pct-preview"><strong>On a critical failure:</strong> ${esc(note)}</div>`);
   const content = root.querySelector(".message-content") ?? root;
   content.append(box);
 }
@@ -993,9 +1596,11 @@ function listEditor(path, rows, rowFn, addLabel) {
 const SKILLS = ["perception", "acrobatics", "arcana", "athletics", "crafting", "deception", "diplomacy", "intimidation", "medicine", "nature", "occultism", "performance", "religion", "society", "stealth", "survival", "thievery", "fortitude", "reflex", "will"];
 const skillList = () => `<datalist id="pct-skills">${SKILLS.map((s) => `<option value="${s}">${esc(skillLabel(s))}</option>`).join("")}</datalist>`;
 
-function checkEdit(c, p, { research = false } = {}) {
-  return `${L("Skill", `<input type="text" list="pct-skills" data-path="${p}.skill" value="${esc(c.skill)}" placeholder="athletics, sailing-lore" class="pct-skill">`)}
-    ${L("DC", F.num(`${p}.dc`, c.dc, "", "pct-dc"))}
+function checkEdit(c, p, { research = false, bare = false } = {}) {
+  const head = `${L("Skill", `<input type="text" list="pct-skills" data-path="${p}.skill" value="${esc(c.skill)}" placeholder="athletics, sailing-lore" class="pct-skill">`)}
+    ${L("DC", F.num(`${p}.dc`, c.dc, "", "pct-dc"))}`;
+  if (bare) return head;
+  return `${head}
     ${research ? L("Max RP", F.num(`${p}.maxRP`, c.maxRP, "none", "pct-dc")) : ""}
     ${L("For", F.text(`${p}.label`, c.label, research ? "where, or what" : "what the check does"), "pct-grow")}`;
 }
@@ -1066,7 +1671,56 @@ function dateStatus(date, done = false) {
 /* GM view of each kind                                                */
 /* ------------------------------------------------------------------ */
 
+/** A row of marks: `have` filled out of `of` (more than `of` shows as extra filled marks). */
+function pips(have, of, cls) {
+  const n = Math.max(num(have), num(of));
+  if (!n) return "";
+  return `<span class="pct-pips ${cls}">${Array.from({ length: Math.min(n, 30) }, (_, i) => `<i class="${i < num(have) ? "fa-solid" : "fa-regular"} fa-circle"></i>`).join("")}</span>`;
+}
+
+/** The counts of a skill challenge as marks, for the GM and for players who may see them. */
+function challengeTally(successes, goal, failures, limit, { numbers = true } = {}) {
+  const n = (v, of) => (numbers ? `<span>${num(v)}${of ? ` of ${of}` : ""}</span>` : "");
+  return `<div class="pct-tally">
+      <span class="pct-tally-row"><span class="pct-k">Successes</span>${pips(successes, goal, "pct-pips-ok")}${n(successes, goal)}</span>
+      <span class="pct-tally-row"><span class="pct-k">Failures</span>${pips(failures, limit, "pct-pips-bad")}${n(failures, limit)}</span>
+    </div>`;
+}
+
 const GM = {
+  challenge(t) {
+    const goal = nullNum(t.goal), limit = nullNum(t.limit), rounds = nullNum(t.rounds);
+    const st = challengeStatus(t);
+    const approaches = t.approaches.map((a, i) => {
+      const uses = nullNum(a.uses);
+      const usedChip = uses !== null ? `<span class="pct-chip" data-tooltip="Times used, of the most allowed">${num(a.used)} / ${uses} uses</span>` : num(a.used) ? `<span class="pct-chip" data-tooltip="Times used">used ${num(a.used)}</span>` : "";
+      return `<div class="pct-obstacle pct-approach ${uses !== null && num(a.used) >= uses ? "pct-done" : ""}">
+          <div class="pct-line">${eye(`approaches.${i}`, a.revealed)}<strong>${a.label ? esc(a.label) : `<em>No name for players</em>`}</strong>${usedChip}</div>
+          ${a.gm ? `<p class="pct-gm">${para(a.gm)}</p>` : ""}
+          ${a.critFail ? `<p class="pct-gm"><span class="pct-k">Critical failure</span> ${para(a.critFail)}</p>` : ""}
+          ${checkRows(t, a.id, a.checks.filter((c) => c.skill), { gm: true })}
+        </div>`;
+    }).join("");
+    const log = (t.log ?? []).slice(-12).reverse().map((x) => `<li><span class="pct-chip">R${num(x.round)}</span> ${x.name ? `<strong>${esc(x.name)}</strong> ` : ""}${esc(DEGREE_LABEL[x.outcome] ?? x.outcome)}${x.skill ? ` (${esc(skillLabel(x.skill))})` : ""} at ${esc(x.what)}: ${[x.s ? signed(x.s) + " S" : "", x.f ? signed(x.f) + " F" : ""].filter(Boolean).join(", ") || "no change"}</li>`).join("");
+    return `<div class="pct-line">
+        ${stepper("successes", num(t.successes), { label: "Successes", fmt: (v) => (goal ? `${v} / ${goal}` : v) })}
+        ${stepper("failures", num(t.failures), { label: "Failures", fmt: (v) => (limit ? `${v} / ${limit}` : v) })}
+        ${rounds || t.oncePerRound ? stepper("round", num(t.round), { label: "Round", fmt: (v) => (rounds ? `${v} of ${rounds}` : v) }) : ""}
+        ${rounds || t.oncePerRound ? A("pctEndRound", "fa-solid fa-forward", { label: "End round" }) : ""}
+        ${st ? `<span class="pct-chip pct-status-${st}">${STATUS_TEXT[st]}</span>` : ""}
+        <span class="pct-push">${A("pctChallengeCheck", "fa-solid fa-dice-d20", { label: "Check", tip: "Call for a check on the fly: send characters a roll button, or roll for them now" })}
+        ${A("pctChallengePost", "fa-solid fa-list", { label: "Post skills", tip: "Post to chat the skills that could help, with no approaches and no DCs. Players say what they do.", data: { mode: "skills" } })}
+        ${A("pctChallengePost", "fa-solid fa-share-from-square", { label: "Post options", tip: "Post the revealed approaches to chat by their players' names, with roll buttons. No DCs are shown.", data: { mode: "options" } })}</span>
+      </div>
+      ${challengeTally(t.successes, goal, t.failures, limit, { numbers: false })}
+      ${t.onSuccess ? `<p class="pct-gm"><span class="pct-k">On success</span> ${para(t.onSuccess)}</p>` : ""}
+      ${t.onFailure ? `<p class="pct-gm"><span class="pct-k">On failure</span> ${para(t.onFailure)}</p>` : ""}
+      ${t.thresholds.length ? `<div class="pct-sub">Along the way</div>${thresholdRows(t.thresholds, t.successes, { gm: true, path: "thresholds", unit: " S" })}` : ""}
+      <div class="pct-sub">Approaches</div>
+      ${approaches || `<p class="pct-hint">No approaches yet. Add them under Edit.</p>`}
+      ${log ? `<details class="pct-log"><summary>Results (${(t.log ?? []).length})</summary><ul>${log}</ul></details>` : ""}`;
+  },
+
   reputation(t) {
     const tier = currentTier(t);
     const ladder = tierLadder(t).reverse();
@@ -1211,6 +1865,20 @@ const GM = {
 /* ------------------------------------------------------------------ */
 
 const EDIT = {
+  challenge: (t) => `<div class="pct-line">${L("Successes needed", F.num("goal", t.goal, "none"))}${L("Failures allowed", F.num("limit", t.limit, "no limit"))}${L("Rounds", F.num("rounds", t.rounds, "no limit"))}
+      ${F.bool("showCount", t.showCount, "Players see the counts", "Off: players see the approaches but not how close they are")}
+      ${F.bool("explain", t.explain !== false, "Proposals need what and why", "Off: players can propose with just a skill and tell you the rest at the table")}
+      ${F.bool("oncePerRound", t.oncePerRound, "One check per PC per round", "Apply tells you when a character rolls a second time in a round. It doesn't stop the roll.")}</div>
+    <div class="pct-sub">Each result adds</div>
+    <table class="pct-cdeg"><thead><tr><th></th><th>Successes</th><th>Failures</th></tr></thead><tbody>${DEGREES.map((d) => `<tr><th>${DEGREE_LABEL[d]}</th><td>${F.num(`degrees.${d}.s`, t.degrees?.[d]?.s, "0", "pct-dc")}</td><td>${F.num(`degrees.${d}.f`, t.degrees?.[d]?.f, "0", "pct-dc")}</td></tr>`).join("")}</tbody></table>
+    <div class="pct-line">${L("On success (GM only)", F.text("onSuccess", t.onSuccess, "What the party gains"), "pct-grow")}${L("On failure (GM only)", F.text("onFailure", t.onFailure, "What it costs them"), "pct-grow")}</div>
+    <div class="pct-sub">Along the way, at a number of successes</div>${listEditor("thresholds", t.thresholds, (x, p) => thresholdEdit(x, p, "Successes"), "Milestone")}
+    <div class="pct-sub">Approaches. Players see only the name; keep it free of spoilers.</div>
+    ${listEditor("approaches", t.approaches, (a, p) => `<div class="pct-line">${L("Players see", F.text(`${p}.label`, a.label, "Search the area"), "pct-grow")}${L("Uses", F.num(`${p}.uses`, a.uses, "any", "pct-dc"))}</div>
+      ${L("GM only", F.area(`${p}.gm`, a.gm, "What it really is and what it turns up", 2), "pct-block")}
+      ${L("On a critical failure (GM only)", F.text(`${p}.critFail`, a.critFail, "A consequence, besides the failure"), "pct-block")}
+      <div class="pct-nested">${listEditor(`${p}.checks`, a.checks, (c, cp) => checkEdit(c, cp, { bare: true }), "Skill")}</div>`, "Approach")}`,
+
   reputation: (t) => `<div class="pct-line">${L("Lowest", F.num("min", t.min, "none"))}${L("Highest", F.num("max", t.max, "none"))}
       ${L("Buttons", `<input type="text" data-path="steps" data-type="steps" value="${esc((t.steps ?? []).join(", "))}" placeholder="1, 2, 5" class="pct-dc">`)}
       ${F.bool("showValue", t.showValue, "Players see the number", "Off: players see only the tier")}</div>
@@ -1288,6 +1956,20 @@ function editView(t) {
 /* ------------------------------------------------------------------ */
 
 const PLAYER = {
+  challenge(p) {
+    const tally = p.successes !== null ? challengeTally(p.successes, p.goal, p.failures, p.limit) : "";
+    const status = p.status ? `<p class="pct-big">${STATUS_TEXT[p.status]}</p>` : "";
+    const round = p.rounds ? `<span class="pct-chip">Round ${p.round} of ${p.rounds}</span>` : "";
+    const approaches = p.approaches.map((a) => {
+      const out = a.left === 0;
+      return `<div class="pct-obstacle pct-approach ${out ? "pct-done" : ""}"><div class="pct-line"><strong>${esc(a.label || "Another way")}</strong>${a.left !== null ? `<span class="pct-chip">${out ? "Used up" : `${a.left} ${a.left === 1 ? "use" : "uses"} left`}</span>` : ""}</div>
+          ${out ? "" : checkRows(p, a.id, a.checks, { gm: false })}</div>`;
+    }).join("");
+    return `${status}${round ? `<div class="pct-line">${round}</div>` : ""}${tally}${thresholdRows(p.thresholds, 0, { gm: false })}
+      ${approaches ? `<div class="pct-sub">Approaches</div>${approaches}` : ""}
+      <div class="pct-line">${A("pctPropose", "fa-solid fa-lightbulb", { label: "Propose an approach", tip: "Say what your character does and which skill fits. The GM approves it and sets the DC." })}</div>`;
+  },
+
   reputation(p) {
     return `<div class="pct-rep"><div class="pct-tier-now">${p.tiers.filter((x) => x.id === p.tier).map((x) => `<strong>${esc(x.label)}</strong>${p.value !== null ? ` <span class="pct-range">${signed(p.value)}</span>` : ""}${x.text ? `<p>${para(x.text)}</p>` : ""}`).join("")}</div></div>
       <ol class="pct-ladder">${[...p.tiers].reverse().map((x) => `<li class="${x.id === p.tier ? "pct-current" : ""}"><strong>${esc(x.label)}</strong> <span class="pct-range">${esc(x.range)}</span>${x.text ? ` <span class="pct-for">${esc(x.text)}</span>` : ""}</li>`).join("")}</ol>`;
@@ -1365,6 +2047,11 @@ function chatCard(p) {
     case "points":
       body = `${p.value !== null ? `<p class="pct-chat-big">${p.value}${p.max !== null ? ` / ${p.max}` : ""}</p>` : ""}${reachedList(p.thresholds)}`;
       break;
+    case "challenge": {
+      const counts = p.successes !== null ? `<p>${p.successes}${p.goal ? ` of ${p.goal}` : ""} successes, ${p.failures}${p.limit ? ` of ${p.limit}` : ""} failures</p>` : "";
+      body = `${p.status ? `<p class="pct-chat-big">${STATUS_TEXT[p.status]}</p>` : ""}${counts}${p.rounds ? `<p>Round ${p.round} of ${p.rounds}</p>` : ""}${reachedList(p.thresholds)}`;
+      break;
+    }
     case "influence":
       body = `<p class="pct-chat-big">${p.npc ? `${esc(p.npc.name)}: ` : ""}${p.value} influence</p><p>Round ${p.roundsUsed} of ${p.rounds}</p>${reachedList(p.thresholds)}`;
       break;
@@ -1469,6 +2156,9 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
       pctRoll: TrackersApp.#onRoll,
       pctCard: TrackersApp.#onCard,
       pctCardList: TrackersApp.#onCardList,
+      pctChallengePost: TrackersApp.#onChallengePost,
+      pctPropose: TrackersApp.#onPropose,
+      pctChallengeCheck: TrackersApp.#onChallengeCheck,
       pctEndRound: TrackersApp.#onEndRound,
       pctHalve: TrackersApp.#onHalve,
       pctClearNpc: TrackersApp.#onClearNpc,
@@ -1794,7 +2484,7 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     const where = locate(t, target.dataset.target);
     const check = where?.checks?.find((c) => c.id === target.dataset.check);
     if (!check) return;
-    await rollCheck({ tid: t.id, target: target.dataset.target, check, title: rollTitle(t, target.dataset.target) });
+    await rollCheck({ tid: t.id, target: target.dataset.target, check, title: rollTitle(t, target.dataset.target), hideDC: t.kind === "challenge" });
   }
 
   static async #onCard(event, target) {
@@ -1805,6 +2495,29 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
   static async #onCardList(event, target) {
     const t = this.trackerFor(target);
     if (t && game.user.isGM) await postCheckCard(t, { list: target.dataset.list });
+  }
+
+  static async #onChallengePost(event, target) {
+    const t = this.trackerFor(target);
+    if (!t || !game.user.isGM) return;
+    if (!t.revealed) {
+      const ok = await foundry.applications.api.DialogV2.confirm({
+        window: { title: "Post to chat" },
+        content: `<p><strong>${esc(t.name)}</strong> is hidden from players, so they can't open it in their window. Post it to chat anyway?</p>`,
+      });
+      if (!ok) return;
+    }
+    await postChallengeCard(t, target.dataset.mode);
+  }
+
+  static async #onChallengeCheck(event, target) {
+    const t = this.trackerFor(target);
+    if (t && game.user.isGM) await adhocDialog(t);
+  }
+
+  static async #onPropose(event, target) {
+    const t = this.trackerFor(target);
+    if (t) await proposeDialog(t.id);
   }
 
   static async #onEndRound(event, target) {
@@ -1956,6 +2669,10 @@ Hooks.once("ready", async () => {
     Store.load();
     storeReady = true;
     if (isPrimaryGM() && !Store.broken) await publish(Store.data);
+    // Chat drew its messages before the data was loaded, so Apply boxes and proposal controls are missing: draw them again.
+    for (const m of game.messages.contents.slice(-100)) {
+      if (m.flags?.[SCOPE]?.proposal || m.flags?.[SCOPE]?.adhoc || parseTag(m.flags?.pf2e?.context?.options)) ui.chat?.updateMessage?.(m);
+    }
     Hooks.callAll(`${MOD}.ready`, api);
     await syncPresets();
     scheduleReminders();
@@ -2001,6 +2718,55 @@ Hooks.on("updateWorldTime", () => {
   refresh();
 });
 Hooks.on("renderChatMessageHTML", onRenderMessage);
+/**
+ * PF2e shows a roll's DC and margin to players when the world's "show check DCs" setting is on,
+ * whatever the roll asks. On rolls marked HIDE_DC, the rolling client marks those parts GM-only
+ * before the card is created, as PF2e does itself with the setting off. Rerolls keep the mark.
+ */
+Hooks.on("preCreateChatMessage", (message) => {
+  const opts = message.flags?.pf2e?.context?.options;
+  if (!Array.isArray(opts) || !opts.includes(HIDE_DC) || !message.flavor) return;
+  const div = document.createElement("div");
+  div.innerHTML = message.flavor;
+  const parts = div.querySelectorAll(".target-dc, [data-whose=\"opposer\"]");
+  if (!parts.length) return;
+  for (const el of parts) el.dataset.visibility = "gm";
+  message.updateSource({ flavor: div.innerHTML });
+});
+/** An applied roll card deleted by a reroll: keep what it applied for the reroll's new card. */
+Hooks.on("deleteChatMessage", (message) => {
+  if (!game.user.isGM) return;
+  const applied = message.flags?.[SCOPE]?.applied;
+  const key = rerollKey(message);
+  if (!applied?.changes || !key) return;
+  rerollStash.set(key, { text: applied.text, changes: applied.changes, at: Date.now() });
+  for (const [k, v] of rerollStash) if (Date.now() - v.at > 120000) rerollStash.delete(k);
+});
+/** The reroll's new card: the active GM marks it, so the offer to replace survives a reload. */
+Hooks.on("createChatMessage", (message) => {
+  if (!isPrimaryGM() || !message.flags?.pf2e?.context?.isReroll) return;
+  const key = rerollKey(message);
+  const hit = key ? rerollStash.get(key) : null;
+  if (!hit) return;
+  message.setFlag(SCOPE, "rerolled", { text: hit.text, changes: hit.changes }).finally(() => rerollStash.delete(key));
+});
+/**
+ * A roll from a GM's check card ticks that character off on the card, and a roll from an approved
+ * proposal marks the proposal rolled. The active GM's client does it, since it can change anyone's message.
+ */
+Hooks.on("createChatMessage", (message) => {
+  if (!isPrimaryGM()) return;
+  const ctx = message.flags?.pf2e?.context;
+  const tag = parseTag(ctx?.options);
+  if (!tag || !ctx.actor || ctx.isReroll) return;
+  const recent = game.messages.contents.slice(-100).reverse();
+  const card = recent.find((m) => m.flags?.[SCOPE]?.adhoc?.row === tag.target);
+  const ad = card?.flags[SCOPE].adhoc;
+  if (ad && ad.actors?.includes(ctx.actor) && !ad.rolled?.[ctx.actor]) card.update({ [`flags.${SCOPE}.adhoc.rolled.${ctx.actor}`]: true });
+  const prop = recent.find((m) => m.flags?.[SCOPE]?.proposal?.target === tag.target);
+  const pr = prop?.flags[SCOPE].proposal;
+  if (pr && pr.status === "approved" && pr.actorId === ctx.actor && !pr.rolled) prop.update({ [`flags.${SCOPE}.proposal.rolled`]: true });
+});
 Hooks.on("updateActor", (actor, changes) => {
   if (changes.name !== undefined || changes.prototypeToken?.name !== undefined) refresh();
 });
