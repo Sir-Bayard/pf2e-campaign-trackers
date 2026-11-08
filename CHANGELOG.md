@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.0.0
+
+- New Quests tab: a quest log with a list grouped by status (Lead, Active, Completed, Failed) beside the chosen quest. Completed quests show green and failed ones red. Categories are yours to name (Main and Side to start).
+- A quest has a picture, who gave it, where, a due date, objectives with optional steps (done when all or any one is done), journal entries, leads, rewards and GM notes. Objectives and steps can be optional and have counts. Every part starts hidden and has its own eye.
+- Each section of a quest has its own pencil and +, so you can add an objective or a note without editing the whole quest.
+- Marking an objective done whispers you a card offering the parts you prepared to reveal, and to mark its objective done when its steps add up. Nothing is revealed until you click.
+- Leads can point to another quest. Revealing a lead to a hidden quest offers to reveal that quest, and a quest shows which leads point to it.
+- Objectives can watch another tracker (a clock, a skill challenge, points, research, influence, reputation, pressure, a checklist entry, a chase or an infiltration), show its progress, and bring you a card when it gets there.
+- Rewards can link a loot actor; revealing one offers to let players open it.
+- Due dates bring you a reminder. Players see them unless you make the deadline secret.
+- Players can tick revealed objectives (a setting, on by default) and add notes signed with their character's name (up to 60 a quest). You get a card for each tick. Both need a GM logged in, and both stop when players can't open the trackers.
+- Players get a short notice and New or Updated markers when a quest is revealed or changes, with an optional sound.
+- The quest panel: the party's focus (the star, set by you) and up to three quests each person pins, with their open objectives, on screen. Players can tick from it. Each person can turn it off.
+- Presets can include quests; an update keeps status, ticks, counts, notes, reveals and the focus.
+- Going back to 1.0.0 after this turns quests into Victory Points trackers. Export your data first if you might.
+
 ## 1.0.0
 
 - New Skill Challenges tab. A challenge is a number of successes before too many failures, with what each result adds, milestones, a round limit if you want one, and what happens on success and on failure.

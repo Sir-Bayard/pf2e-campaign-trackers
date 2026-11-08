@@ -1,21 +1,23 @@
 /**
  * PF2e Campaign Trackers
- * GM Core's subsystems and a few table-neutral trackers in one window: Reputation, Victory Points,
- * Influence, Research, Chases, Infiltration, Clocks and Checklists.
+ * A quest log, GM Core's subsystems and a few table-neutral trackers in one window: Quests, Reputation,
+ * Pressure, Victory Points, Skill Challenges, Influence, Research, Chases, Infiltration, Clocks and Checklists.
  *
  * Everything is hidden from players until the GM reveals it. The full data lives in a journal entry
  * that only GMs can see; players get a copy of what has been revealed, kept in a world setting.
  * Subsystem checks are rolled through the PF2e system with a tag, and the GM applies the result
- * from the roll card. Dates on clocks and checklists send the GM a whisper when the calendar
- * reaches them. Campaign content can be shipped by another module as a preset.
+ * from the roll card. Dates on clocks, checklists and quests send the GM a whisper when the calendar
+ * reaches them. Players' quest ticks and notes reach the active GM through the module socket.
+ * Campaign content can be shipped by another module as a preset.
  */
 
 const MOD = "pf2e-campaign-trackers";
 /** Flag scope for the data journal and chat cards. */
 const SCOPE = MOD;
 
-const KINDS = ["reputation", "pressure", "points", "challenge", "influence", "research", "chase", "infiltration", "clock", "checklist"];
+const KINDS = ["quest", "reputation", "pressure", "points", "challenge", "influence", "research", "chase", "infiltration", "clock", "checklist"];
 const KIND_INFO = {
+  quest: { label: "Quest", tab: "Quests", icon: "fa-solid fa-scroll", blurb: "The party's quests and leads: objectives with steps, journal entries, leads to other quests and rewards, each revealed when you choose." },
   reputation: { label: "Reputation", tab: "Reputation", icon: "fa-solid fa-scale-balanced", blurb: "How a group regards the party, in named tiers. GM Core's Reputation subsystem, or your own tiers." },
   pressure: { label: "Pressure track", tab: "Pressure", icon: "fa-solid fa-gauge-high", blurb: "Something building against the party, in named bands: heat, alarm, suspicion, doom. You move it by judgment; it has no checks." },
   points: { label: "Victory Points", tab: "Victory Points", icon: "fa-solid fa-flag-checkered", blurb: "Progress the party earns with checks toward a goal, with thresholds along the way." },
@@ -63,10 +65,16 @@ const TPL = {
   adhoc: () => ({ id: uid(), skill: "", dc: null, label: "", approach: null }),
   segment: () => ({ id: uid(), label: "", date: null, text: "", state: "empty", reminded: null }),
   entry: () => ({ id: uid(), group: "", label: "", detail: "", effect: "", closes: null, tag: "", done: false, revealed: false, reminded: null }),
+  objective: () => ({ id: uid(), text: "", gm: "", state: "open", optional: false, count: null, have: 0, mode: "all", steps: [], onDone: [], doneBy: null, link: null, revealed: false }),
+  step: () => ({ id: uid(), text: "", gm: "", state: "open", optional: false, count: null, have: 0, onDone: [], doneBy: null, link: null, revealed: false }),
+  qentry: () => ({ id: uid(), date: null, text: "", revealed: false }),
+  lead: () => ({ id: uid(), text: "", to: "", gm: "", revealed: false }),
+  reward: () => ({ id: uid(), text: "", gm: "", actor: null, revealed: false }),
 };
 
 /** Which fields of each kind are lists, and the template their rows use. Nested lists use "parent.child". */
 const LISTS = {
+  quest: { objectives: "objective", "objectives.steps": "step", entries: "qentry", leads: "lead", rewards: "reward" },
   reputation: { tiers: "tier" },
   pressure: { tiers: "tier", thresholds: "threshold" },
   points: { thresholds: "threshold", checks: "check" },
@@ -112,6 +120,8 @@ const GMCORE_AWARENESS = () => [
 function blank(kind, name) {
   const base = { id: uid(), kind, name: name || `New ${KIND_INFO[kind].label.toLowerCase()}`, revealed: false, desc: "", notes: "", sort: Date.now() };
   switch (kind) {
+    case "quest":
+      return { ...base, status: "active", category: "Main", focus: false, img: "", giver: null, giverText: "", location: "", deadline: null, showDue: true, reminded: null, objectives: [], entries: [], leads: [], rewards: [], pnotes: [] };
     case "reputation":
       return { ...base, value: 0, min: -50, max: 50, showValue: true, steps: [1, 2, 5], tiers: GMCORE_TIERS() };
     case "pressure":
@@ -151,6 +161,16 @@ function normalize(raw) {
     t.log = Array.isArray(t.log) ? t.log : [];
   } else if (t.degrees) t.degrees = { ...DEG(), ...t.degrees };
   if (kind === "chase") t.quarry = { enabled: true, label: "Quarry", at: 1, ...(t.quarry ?? {}) };
+  if (kind === "quest") {
+    if (!QSTATUS.includes(t.status)) t.status = "active";
+    t.focus = !!t.focus;
+    t.pnotes = Array.isArray(t.pnotes) ? t.pnotes : [];
+    for (const o of t.objectives) {
+      fixGoal(o);
+      if (o.mode !== "any") o.mode = "all";
+      o.steps.forEach(fixGoal);
+    }
+  }
   return t;
 }
 
@@ -164,6 +184,347 @@ function fillRow(kind, path, row, tpl) {
     out[field] = (Array.isArray(out[field]) ? out[field] : []).map((r) => fillRow(kind, sub, r, subTpl));
   }
   return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* Quests                                                              */
+/* ------------------------------------------------------------------ */
+
+const QSTATUS = ["active", "lead", "completed", "failed"];
+const QSTATUS_LABEL = { active: "Active", lead: "Lead", completed: "Completed", failed: "Failed" };
+/** The order quests are listed in, by status. */
+const QGROUPS = ["active", "lead", "completed", "failed"];
+const GOAL_STATES = ["open", "done", "failed"];
+
+/** An objective or step with a valid state and a count that makes sense. */
+function fixGoal(g) {
+  if (!GOAL_STATES.includes(g.state)) g.state = "open";
+  g.count = nullNum(g.count);
+  if (g.count !== null && g.count < 1) g.count = null;
+  g.have = Math.max(0, num(g.have));
+  g.onDone = Array.isArray(g.onDone) ? g.onDone.filter((x) => typeof x === "string") : [];
+  g.link = g.link && typeof g.link === "object" && g.link.tid ? { tid: String(g.link.tid), cond: g.link.cond ?? null, at: nullNum(g.link.at), entry: g.link.entry ?? null } : null;
+}
+
+/** What a goal can watch on each kind of tracker, the first being the default. */
+const LINK_CONDS = {
+  clock: [["full", "is full"]],
+  challenge: [["won", "succeeds"], ["lost", "fails"]],
+  points: [["atLeast", "reaches"]],
+  research: [["atLeast", "reaches"]],
+  influence: [["atLeast", "reaches"]],
+  reputation: [["atLeast", "reaches"]],
+  pressure: [["atLeast", "reaches"]],
+  checklist: [["entry", "has ticked"]],
+  chase: [["through", "is won (the party gets through)"]],
+  infiltration: [["objective", "reaches its objective"]],
+};
+const linkCond = (link, t) => (LINK_CONDS[t?.kind] ?? []).some(([c]) => c === link?.cond) ? link.cond : LINK_CONDS[t?.kind]?.[0]?.[0] ?? null;
+
+/** Whether a linked tracker has reached what the goal watches, and how far along it is. */
+function linkState(link, trackers) {
+  const t = link?.tid ? (trackers ?? []).find((x) => x.id === link.tid) : null;
+  if (!t) return { met: false, text: link?.tid ? "linked tracker is gone" : "", name: "" };
+  const cond = linkCond(link, t);
+  const name = t.name;
+  switch (cond) {
+    case "full": {
+      const n = t.segments?.length ?? 0, f = (t.segments ?? []).filter((x) => x.state === "filled").length;
+      return { met: n > 0 && f >= n, text: `${f} of ${n}`, name };
+    }
+    case "won":
+    case "lost":
+      return { met: challengeStatus(t) === cond, text: `${num(t.successes)} S, ${num(t.failures)} F`, name };
+    case "atLeast": {
+      const at = nullNum(link.at);
+      return { met: at !== null && num(t.value) >= at, text: `${num(t.value)}${at !== null ? ` of ${at}` : ""}`, name };
+    }
+    case "entry": {
+      const e = (t.entries ?? []).find((x) => x.id === link.entry);
+      return { met: !!e?.done, text: e ? `${shortText(e.label, 40)}: ${e.done ? "ticked" : "not yet"}` : "pick an entry", name };
+    }
+    case "through": {
+      const n = t.obstacles?.length ?? 0;
+      return { met: n > 0 && num(t.current) >= n, text: `obstacle ${Math.min(num(t.current) + 1, n)} of ${n}`, name };
+    }
+    case "objective": {
+      const goal = num(t.objective);
+      return { met: goal > 0 && infiltrationIP(t) >= goal, text: `${infiltrationIP(t)} of ${goal || "?"} IP`, name };
+    }
+  }
+  return { met: false, text: "", name };
+}
+
+/** Open goals whose linked tracker has just reached what they watch: [{ tid, goal, why }]. */
+function linkTriggers(before, after) {
+  const out = [];
+  for (const q of after.trackers ?? []) {
+    if (q.kind !== "quest" || !OPEN_Q.includes(q.status)) continue;
+    for (const o of q.objectives ?? []) {
+      for (const g of [o, ...(o.steps ?? [])]) {
+        if (!g.link?.tid || g.state !== "open") continue;
+        const now = linkState(g.link, after.trackers);
+        if (now.met && !linkState(g.link, before.trackers).met) out.push({ tid: q.id, goal: g.id, why: `${now.name} ${linkWhy(g.link, after.trackers)}` });
+      }
+    }
+  }
+  return out;
+}
+function linkWhy(link, trackers) {
+  const t = (trackers ?? []).find((x) => x.id === link.tid);
+  const cond = linkCond(link, t);
+  if (cond === "atLeast") return `reached ${link.at}`;
+  if (cond === "entry") return `has "${shortText((t?.entries ?? []).find((x) => x.id === link.entry)?.label, 40)}" ticked`;
+  return { full: "is full", won: "succeeded", lost: "failed", through: "was won", objective: "reached its objective" }[cond] ?? "changed";
+}
+
+/** Statuses of a quest still in play. */
+const OPEN_Q = ["active", "lead"];
+
+/** How an objective's steps stand: { done, of, complete } (complete: the steps add up, by "all" or "any one"). */
+function stepProgress(o, steps = o.steps) {
+  const counted = steps.filter((x) => !x.optional);
+  const done = steps.filter((x) => x.state === "done").length;
+  const doneNeeded = counted.filter((x) => x.state === "done").length;
+  const complete = steps.length > 0 && (o.mode === "any" ? done > 0 : counted.length > 0 && doneNeeded === counted.length);
+  return { done, of: o.mode === "any" ? steps.length : counted.length, complete };
+}
+
+/** An objective or step by id, with the objective it sits under (null for an objective). */
+function findGoal(t, id) {
+  for (const o of t.objectives ?? []) {
+    if (o.id === id) return { g: o, parent: null };
+    for (const st of o.steps ?? []) if (st.id === id) return { g: st, parent: o };
+  }
+  return null;
+}
+
+/**
+ * A player ticks or unticks a goal. Allowed on a revealed goal of a revealed, unfinished quest:
+ * open to done, or done back to open when a player (not the GM) ticked it. Players never mark failed.
+ * Changes `t` in place and returns true when it changed.
+ */
+function applyQuestTick(t, goalId, to, userId) {
+  if (t?.kind !== "quest" || !t.revealed || !["active", "lead"].includes(t.status)) return false;
+  const found = findGoal(t, goalId);
+  if (!found || !found.g.revealed || (found.parent && !found.parent.revealed)) return false;
+  const g = found.g;
+  if (to === "done" && g.state === "open") {
+    g.state = "done";
+    g.doneBy = userId;
+    return true;
+  }
+  if (to === "open" && g.state === "done" && g.doneBy && g.doneBy !== "gm") {
+    g.state = "open";
+    g.doneBy = null;
+    return true;
+  }
+  return false;
+}
+
+const NOTE_MAX = 60, NOTE_LEN = 1000;
+/** Add a party note (anyone) or delete one (its author, or the GM). Changes `t` in place; true when it changed. */
+function applyQuestNote(t, op, { id = null, by, name = "", text = "", isGM = false } = {}) {
+  if (t?.kind !== "quest") return false;
+  t.pnotes = Array.isArray(t.pnotes) ? t.pnotes : [];
+  if (op === "add") {
+    const body = String(text ?? "").trim().slice(0, NOTE_LEN);
+    if (!body || (!isGM && !t.revealed) || t.pnotes.length >= NOTE_MAX) return false;
+    t.pnotes.push({ id: uid(), by, name: String(name || "?").slice(0, 60), text: body, at: Date.now() });
+    return true;
+  }
+  if (op === "delete") {
+    const i = t.pnotes.findIndex((n) => n.id === id && (isGM || n.by === by));
+    if (i < 0) return false;
+    t.pnotes.splice(i, 1);
+    return true;
+  }
+  return false;
+}
+
+const ROW_KIND = { objectives: "Objective", "objectives.steps": "Step", entries: "Journal", leads: "Lead", rewards: "Reward" };
+/** A row of a quest named for the GM: "Step: Get disguises". */
+function rowLabel(t, id) {
+  const f = findRow(t, id);
+  if (!f) return null;
+  return `${ROW_KIND[f.list] ?? "Item"}: ${shortText(f.row.text, 70) || "(no text)"}`;
+}
+
+/**
+ * What finishing a goal offers the GM: the hidden rows it was set to reveal, and the objective it
+ * completes when it was the step that made the steps add up.
+ */
+function completionOffers(t, goalId) {
+  const found = findGoal(t, goalId);
+  if (!found) return { reveal: [], parent: null };
+  const reveal = (found.g.onDone ?? []).filter((id) => {
+    const f = findRow(t, id);
+    return f && f.row.revealed === false;
+  });
+  const parent = found.parent && found.parent.state === "open" && stepProgress(found.parent).complete ? found.parent.id : null;
+  return { reveal, parent };
+}
+
+/** A short fingerprint of what players see of a quest, to tell when it changed. */
+function questHash(p) {
+  const { pnotes, focus, ...rest } = p ?? {};
+  const str = JSON.stringify(rest);
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+
+/** What each quest looked like when this player last opened it, kept in this browser. */
+const SEEN_KEY = `${MOD}.seen`;
+let seenCache = null;
+function seenMap() {
+  if (seenCache) return seenCache;
+  try {
+    seenCache = JSON.parse(localStorage.getItem(SEEN_KEY)) ?? {};
+  } catch {
+    seenCache = {};
+  }
+  return seenCache;
+}
+/** "new" for a quest this player has never opened, "updated" if it changed since, else "". */
+function unseen(q) {
+  const was = seenMap()[q.id];
+  return was === undefined ? "new" : was !== questHash(q) ? "updated" : "";
+}
+function markSeen(q) {
+  const map = seenMap();
+  const h = questHash(q);
+  if (map[q.id] === h) return;
+  map[q.id] = h;
+  try {
+    localStorage.setItem(SEEN_KEY, JSON.stringify(map));
+  } catch {
+    /* no storage: markers come back next time */
+  }
+}
+
+/** The quests as players last saw them in the shared copy, to say what changed when it changes. */
+let lastQuests = null;
+const questsOf = (pub) => new Map((pub?.trackers ?? []).filter((t) => t.kind === "quest").map((t) => [t.id, t]));
+
+/** Goals this player ticked or unticked, by quest, until the shared copy next changes that quest. */
+const ownTicks = new Map();
+/** A player asks the GM to tick a goal, remembering it so their own tick brings no notice. */
+function tickToGM(tid, goal, to) {
+  if (!sendToGM({ type: "qtick", tid, goal, to })) return false;
+  if (!ownTicks.has(tid)) ownTicks.set(tid, new Map());
+  ownTicks.get(tid).set(goal, { to, at: Date.now() });
+  return true;
+}
+/** True when the only change from `old` to `q` is in goals this player ticked themselves. */
+function onlyOwnTicks(old, q) {
+  const mine = ownTicks.get(q.id);
+  if (!mine?.size) return false;
+  const copy = structuredClone(old);
+  for (const o of copy.objectives ?? []) {
+    for (const g of [o, ...(o.steps ?? [])]) {
+      const asked = mine.get(g.id);
+      const now = asked && Date.now() - asked.at < 15000 ? findGoal(q, g.id)?.g : null;
+      if (now && now.state === asked.to) Object.assign(g, { state: now.state, doneBy: now.doneBy });
+    }
+  }
+  return questHash(copy) === questHash(q);
+}
+
+/** A player's client: a short notice (and the GM's sound, if set) for each quest that appeared or changed. */
+function questNotices(pub) {
+  if (game.user.isGM) return;
+  if (!game.settings.get(MOD, "playerAccess")) {
+    lastQuests = questsOf(pub);
+    return;
+  }
+  const now = questsOf(pub);
+  const before = lastQuests;
+  lastQuests = now;
+  if (!before) return;
+  const lines = [];
+  for (const [id, q] of now) {
+    const old = before.get(id);
+    if (!old) lines.push(`New quest: ${q.name}`);
+    else if (old.status !== q.status && (q.status === "completed" || q.status === "failed")) lines.push(`Quest ${q.status}: ${q.name}`);
+    else if (questHash(old) !== questHash(q)) {
+      if (!onlyOwnTicks(old, q)) lines.push(`Quest updated: ${q.name}`);
+      // Their own tick doesn't make the quest new to them either.
+      else if (seenMap()[id] === questHash(old)) markSeen(q);
+      ownTicks.delete(id);
+    }
+    if (old && q.focus && !old.focus && ["active", "lead"].includes(q.status)) lines.push(`Party focus: ${q.name}`);
+    if (old) {
+      const had = new Set((old.pnotes ?? []).map((x) => x.id));
+      const added = (q.pnotes ?? []).filter((x) => !had.has(x.id) && x.by !== game.user.id);
+      if (added.length) lines.push(`${added.at(-1).name} added a note to ${q.name}`);
+    }
+  }
+  if (!lines.length) return;
+  for (const l of lines.slice(0, 3)) ui.notifications.info(l);
+  if (lines.length > 3) ui.notifications.info(`${lines.length - 3} more quests changed.`);
+  const src = game.settings.get(MOD, "questSound");
+  if (src) foundry.audio.AudioHelper.play({ src, volume: 0.6, autoplay: true, loop: false }, false);
+}
+
+const SOCKET = `module.${MOD}`;
+
+/** A player's request, sent to the active GM: tick a goal, add a note, delete a note. */
+function sendToGM(msg) {
+  if (!game.users.activeGM) {
+    ui.notifications.warn("A GM needs to be logged in for that.");
+    return false;
+  }
+  game.socket.emit(SOCKET, { ...msg, userId: game.user.id });
+  return true;
+}
+
+/** The active GM's client handles players' requests. Module sockets don't say who sent a message, so this trusts the user id it carries. */
+const lastNoteAt = new Map();
+async function onSocket(msg) {
+  if (!msg?.type) return;
+  // The GM's client answers a request it couldn't record; only the player who sent it shows it.
+  if (msg.type === "qfail") {
+    if (msg.to === game.user.id) ui.notifications.warn(msg.text);
+    return;
+  }
+  if (!isPrimaryGM()) return;
+  const user = game.users.get(msg.userId);
+  if (!user || user.isGM) return;
+  const fail = (text) => game.socket.emit(SOCKET, { type: "qfail", to: user.id, text });
+  if (!["qtick", "qnote", "qnoteDel"].includes(msg.type)) return;
+  if (!storeReady || Store.broken) return fail("The GM's trackers aren't ready yet. Try again in a moment.");
+  if (!game.settings.get(MOD, "playerAccess")) return;
+  const who = user.character ? pcName(user.character) : user.name;
+  if (msg.type === "qtick") {
+    if (!game.settings.get(MOD, "playerTicks")) return;
+    const done = await mutateTracker(msg.tid, (t) => applyQuestTick(t, msg.goal, msg.to, user.id) || undefined, { notify: false });
+    if (done && msg.to === "done") await promptCompletion(Store.get(msg.tid), msg.goal, { who });
+    else if (!done) {
+      const cur = Store.get(msg.tid);
+      if (!cur || findGoal(cur, msg.goal)?.g.state !== msg.to) fail("That tick didn't go through. It may have changed in the meantime; look again.");
+    }
+  } else if (msg.type === "qnote") {
+    const now = Date.now();
+    if (now - (lastNoteAt.get(user.id) ?? 0) < 2000) return fail("One note at a time, please. Try again in a moment.");
+    lastNoteAt.set(user.id, now);
+    const t = Store.get(msg.tid);
+    if ((t?.pnotes?.length ?? 0) >= NOTE_MAX) return fail(`${t.name} has ${NOTE_MAX} notes, the most it holds. Delete some first.`);
+    const added = await mutateTracker(msg.tid, (tr) => applyQuestNote(tr, "add", { by: user.id, name: who, text: msg.text }) || undefined, { notify: false });
+    if (!added) fail("Your note didn't go through. Try again.");
+  } else if (msg.type === "qnoteDel") {
+    await mutateTracker(msg.tid, (t) => applyQuestNote(t, "delete", { id: msg.note, by: user.id }) || undefined, { notify: false });
+  }
+}
+
+/** One line on a quest for the card header: its status and how its objectives stand. */
+function questSummary(t) {
+  const main = t.objectives.filter((o) => !o.optional);
+  const done = main.filter((o) => o.state === "done").length;
+  const parts = [QSTATUS_LABEL[t.status] ?? "Active"];
+  if (t.category) parts.push(t.category);
+  if (main.length) parts.push(`${done} of ${main.length} objectives`);
+  return parts.join(", ");
 }
 
 /* ------------------------------------------------------------------ */
@@ -218,6 +579,8 @@ const STATUS_TEXT = { won: "Succeeded", lost: "Failed", time: "Out of time" };
 /** A one-line summary for the card header. */
 function summary(t) {
   switch (t.kind) {
+    case "quest":
+      return questSummary(t);
     case "challenge": {
       const goal = nullNum(t.goal), limit = nullNum(t.limit), st = challengeStatus(t);
       return `${num(t.successes)}${goal ? ` of ${goal}` : ""} successes, ${num(t.failures)}${limit ? ` of ${limit}` : ""} failures${st ? `. ${STATUS_TEXT[st]}` : ""}`;
@@ -285,6 +648,7 @@ function bounds(t, path) {
   const m = path.match(/^obstacles\.(\d+)\.(progress|byActor\.[^.]+)$/);
   if (m) return [0, num(t.obstacles?.[Number(m[1])]?.points, null)];
   if (path === "roundsUsed" && t.kind === "influence") return [0, null];
+  if (/\.have$/.test(path)) return [0, nullNum(foundry.utils.getProperty(t, path.replace(/\.have$/, ""))?.count)];
   return [0, null];
 }
 
@@ -448,7 +812,9 @@ async function mutate(fn, { notify = true } = {}) {
     }
     if (lines.length) whisperGM(lines, "fa-solid fa-bullhorn");
   }
-  return (await Store.save()) ? result : undefined;
+  const saved = await Store.save();
+  if (saved) for (const tr of linkTriggers(before, draft)) promptCompletion(Store.get(tr.tid), tr.goal, { why: tr.why });
+  return saved ? result : undefined;
 }
 
 const mutateTracker = (id, fn, opts) => mutate((d) => {
@@ -520,10 +886,28 @@ const shown = (list) => (list ?? []).filter((x) => x.revealed);
 const pubCheck = (c) => ({ id: c.id, label: c.label, skill: c.skill, dc: c.dc, maxRP: c.maxRP ?? null, earned: c.earned ?? 0 });
 
 /** The part of a tracker players may see, or null while it is hidden. */
-function project(t, { force = false } = {}) {
+function project(t, { force = false, all = null } = {}) {
   if (!t.revealed && !force) return null;
   const p = { id: t.id, kind: t.kind, name: t.name, desc: t.desc, sort: t.sort };
   switch (t.kind) {
+    case "quest": {
+      // Only revealed parts, and no GM text. A lead names the quest it points to only once that quest is revealed too.
+      const goal = (g) => ({ id: g.id, text: g.text, state: g.state, optional: !!g.optional, count: g.count, have: g.count !== null ? num(g.have) : null, doneBy: g.doneBy === "gm" ? "gm" : g.doneBy ? "player" : null });
+      const linked = (id) => (all ?? []).find((x) => x.id === id && x.kind === "quest" && x.revealed);
+      return {
+        ...p, status: t.status, category: t.category, focus: !!t.focus, img: t.img,
+        giver: t.giver ? { name: t.giver.name, img: t.giver.img } : t.giverText ? { name: t.giverText, img: "" } : null,
+        location: t.location, deadline: t.showDue !== false ? t.deadline : null,
+        objectives: shown(t.objectives).map((o) => ({ ...goal(o), mode: o.mode, steps: shown(o.steps).map(goal) })),
+        entries: shown(t.entries).map((e) => ({ id: e.id, date: e.date, text: e.text })),
+        leads: shown(t.leads).map((l) => {
+          const q = linked(l.to);
+          return { id: l.id, text: l.text, to: q ? { id: q.id, name: q.name } : null };
+        }),
+        rewards: shown(t.rewards).map((r) => ({ id: r.id, text: r.text, actor: r.actor ? { uuid: r.actor.uuid, name: r.actor.name, img: r.actor.img } : null })),
+        pnotes: (t.pnotes ?? []).map((n) => ({ id: n.id, by: n.by, name: n.name, text: n.text, at: n.at })),
+      };
+    }
     case "reputation": {
       const tier = currentTier(t);
       return { ...p, value: t.showValue ? num(t.value) : null, tier: tier?.id ?? null, tiers: tierLadder(t).map((x) => ({ id: x.id, label: x.label, range: t.showValue ? x.range : "", text: x.text })) };
@@ -569,7 +953,7 @@ function project(t, { force = false } = {}) {
 }
 
 async function publish(data) {
-  const pub = { trackers: data.trackers.map((t) => project(t)).filter(Boolean) };
+  const pub = { trackers: data.trackers.map((t) => project(t, { all: data.trackers })).filter(Boolean) };
   const current = game.settings.get(MOD, "public");
   if (JSON.stringify(current) === JSON.stringify(pub)) return;
   await game.settings.set(MOD, "public", pub);
@@ -578,7 +962,7 @@ async function publish(data) {
 /** Trackers as the current user sees them: everything for a GM, the revealed copy for players. */
 function visibleTrackers({ asPlayer = false } = {}) {
   if (game.user.isGM && !asPlayer) return Store.data.trackers;
-  if (game.user.isGM) return Store.data.trackers.map((t) => project(t)).filter(Boolean);
+  if (game.user.isGM) return Store.data.trackers.map((t) => project(t, { all: Store.data.trackers })).filter(Boolean);
   return game.settings.get(MOD, "public")?.trackers ?? [];
 }
 
@@ -590,7 +974,10 @@ const presets = new Map();
 let storeReady = false;
 
 /** Fields that belong to play, kept when a preset's text is updated. */
-const STATE_KEYS = new Set(["value", "revealed", "round", "current", "awareness", "edge", "roundsUsed", "progress", "byActor", "done", "state", "earned", "reminded", "showValue", "showAwareness", "showLabels", "npc", "successes", "failures", "used", "log", "showCount", "adhoc"]);
+const STATE_KEYS = new Set(["value", "revealed", "round", "current", "awareness", "edge", "roundsUsed", "progress", "byActor", "done", "state", "earned", "reminded", "showValue", "showAwareness", "showLabels", "npc", "successes", "failures", "used", "log", "showCount", "adhoc", "status", "have", "pnotes", "doneBy", "focus", "showDue"]);
+/** Fields a preset usually leaves empty for the GM to fill in play: kept unless the preset gives a value. */
+const KEEP_IF_EMPTY = new Set(["giver", "actor", "img", "deadline", "onDone", "link"]);
+const isEmptyVal = (v) => v === null || v === undefined || v === "" || (Array.isArray(v) && !v.length);
 
 /**
  * Copy play state from an old copy of a tracker into a fresh one from a preset. Rows in a list
@@ -601,6 +988,8 @@ function keepState(fresh, old) {
   for (const [key, val] of Object.entries(fresh)) {
     if (STATE_KEYS.has(key) && key in old) {
       fresh[key] = clone(old[key]);
+    } else if (KEEP_IF_EMPTY.has(key) && isEmptyVal(val)) {
+      if (!isEmptyVal(old[key])) fresh[key] = clone(old[key]);
     } else if (Array.isArray(val) && Array.isArray(old[key])) {
       fresh[key] = val.map((row) => (row && typeof row === "object" && row.id ? keepState(row, old[key].find((o) => o?.id === row.id)) : row));
       const ids = new Set(val.map((row) => row?.id));
@@ -616,6 +1005,13 @@ function keepState(fresh, old) {
 function fromPreset(preset, raw, index) {
   const { key, ...rest } = raw;
   const t = normalize({ ...rest, id: `${preset.id}-${key ?? raw.id ?? index}`, preset: preset.id, sort: num(raw.sort, index) });
+  if (t.kind === "quest") {
+    // A preset names its own trackers by key; stored, they carry the preset's id in front.
+    const keys = new Set((preset.trackers ?? []).map((r, i) => String(r.key ?? r.id ?? i)));
+    const own = (id) => (id && keys.has(String(id)) ? `${preset.id}-${id}` : id);
+    for (const l of t.leads) l.to = own(l.to);
+    for (const o of t.objectives) for (const g of [o, ...o.steps]) if (g.link) g.link.tid = own(g.link.tid);
+  }
   return t;
 }
 
@@ -1352,6 +1748,137 @@ async function onceFor(message, fn) {
   }
 }
 
+/** Give every player Observer on a loot actor, so they can open it and take what's inside. */
+async function letPlayersOpen(uuid) {
+  const actor = uuid ? await fromUuid(uuid) : null;
+  const OBS = CONST.DOCUMENT_OWNERSHIP_LEVELS.OBSERVER;
+  if (!actor || num(actor.ownership?.default) >= OBS) return false;
+  await actor.update({ "ownership.default": OBS });
+  return true;
+}
+
+/** A reward's loot actor that players can't open yet, or null. */
+async function lootToOpen(t, rewardId) {
+  const r = (t.rewards ?? []).find((x) => x.id === rewardId);
+  if (!r?.actor?.uuid) return null;
+  const actor = await fromUuid(r.actor.uuid);
+  return actor && num(actor.ownership?.default) < CONST.DOCUMENT_OWNERSHIP_LEVELS.OBSERVER ? actor : null;
+}
+
+/**
+ * A goal was finished: whisper the GM a card with what it offers. Players' ticks always send one,
+ * so the GM hears of them; the GM's own ticks send one only when there is something to offer.
+ */
+async function promptCompletion(t, goalId, { who = null, why = null } = {}) {
+  const found = t ? findGoal(t, goalId) : null;
+  if (!found) return;
+  // A link (another tracker reaching something) offers the goal itself; it isn't done yet, so its reveals wait.
+  const self = why && found.g.state === "open" ? goalId : null;
+  const { reveal, parent } = self ? { reveal: completionOffers(t, goalId).reveal, parent: null } : completionOffers(t, goalId);
+  if (!who && !self && !reveal.length && !parent) return;
+  const what = shortText(found.g.text, 80) || "an objective";
+  const line = self ? `${esc(why)}, so <em>${esc(what)}</em> may be done.` : `${who ? `<strong>${esc(who)}</strong> marked` : "Marked"} <em>${esc(what)}</em> done.`;
+  await ChatMessage.create({
+    content: `<div class="pct-chat pct-qprompt"><header><i class="${KIND_INFO.quest.icon}"></i> <strong>${esc(t.name)}</strong></header>
+      <p>${line}</p><div class="pct-qprompt-state"></div></div>`,
+    speaker: { alias: KIND_INFO.quest.label },
+    whisper: gmIds(),
+    flags: { [SCOPE]: { qprompt: { tid: t.id, goal: goalId, self, reveal, parent, status: "open" } } },
+  });
+}
+
+/** The GM's choices on an On-completion card: tick what to reveal, then Reveal or Not yet. */
+async function renderCompletion(message, qp, root) {
+  const box = root.querySelector(".pct-qprompt-state");
+  if (!box) return;
+  if (qp.status !== "open") {
+    box.innerHTML = `<p class="pct-hint">${esc(qp.result || "Done.")}</p>`;
+    return;
+  }
+  if (!game.user.isGM) return;
+  const t = Store.get(qp.tid);
+  if (!t) {
+    box.innerHTML = `<p class="pct-hint">That quest no longer exists.</p>`;
+    return;
+  }
+  const rows = [];
+  const reopened = !qp.self && findGoal(t, qp.goal)?.g.state !== "done";
+  if (qp.self) {
+    const sg = findGoal(t, qp.self)?.g;
+    if (sg && sg.state === "open") rows.push(`<label class="pct-chk"><input type="checkbox" name="self" checked> <span>Mark <em>${esc(shortText(sg.text, 70))}</em> done</span></label>`);
+  }
+  if (qp.parent) {
+    const pg = findGoal(t, qp.parent)?.g;
+    if (pg && pg.state === "open") rows.push(`<label class="pct-chk"><input type="checkbox" name="parent" checked> <span>Mark <em>${esc(shortText(pg.text, 70))}</em> done too (its steps add up)</span></label>`);
+  }
+  for (const id of qp.reveal) {
+    const f = findRow(t, id);
+    if (!f || f.row.revealed) continue;
+    rows.push(`<label class="pct-chk"><input type="checkbox" name="reveal" value="${esc(id)}" checked> <span>Reveal ${esc(rowLabel(t, id))}</span></label>`);
+    if (f.list === "leads") {
+      const to = Store.data.trackers.find((x) => x.id === f.row.to && x.kind === "quest" && !x.revealed);
+      if (to) rows.push(`<label class="pct-chk pct-indent"><input type="checkbox" name="leadq" value="${esc(to.id)}" checked> <span>and reveal the quest it points to, ${esc(to.name)}</span></label>`);
+    }
+    if (f.list === "rewards" && (await lootToOpen(t, id))) rows.push(`<label class="pct-chk pct-indent"><input type="checkbox" name="loot" value="${esc(id)}" checked> <span>and let players open ${esc(f.row.actor.name)}</span></label>`);
+  }
+  const shownRows = reopened ? rows.map((r) => r.replace(" checked>", ">")) : rows;
+  box.innerHTML = `${reopened ? `<p class="pct-hint">It has been marked open again since.</p>` : ""}${shownRows.length ? `<div class="pct-qprompt-rows">${shownRows.join("")}</div>` : `<p class="pct-hint">Nothing was set to be revealed.</p>`}
+    <div class="pct-req pct-req-row">${rows.length ? `<button type="button" data-act="go"><i class="fa-solid fa-eye"></i> Reveal</button>` : ""}<button type="button" data-act="skip">${rows.length ? "Not yet" : "OK"}</button></div>`;
+  box.querySelector('[data-act="go"]')?.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.currentTarget.disabled = true;
+    const pick = (n) => [...box.querySelectorAll(`input[name="${n}"]:checked`)].map((i) => i.value);
+    const ids = pick("reveal"), loot = pick("loot"), leadq = pick("leadq"), doParent = !!box.querySelector('input[name="parent"]:checked'), doSelf = !!box.querySelector('input[name="self"]:checked');
+    onceFor(message, async (m) => {
+      if (m.getFlag(SCOPE, "qprompt")?.status !== "open") return;
+      const done = await mutate((d) => {
+        const tr = d.trackers.find((x) => x.id === qp.tid);
+        if (!tr) return undefined;
+        for (const qid of leadq) {
+          const other = d.trackers.find((x) => x.id === qid);
+          if (other) other.revealed = true;
+        }
+        if (doSelf) {
+          const sg = findGoal(tr, qp.self)?.g;
+          if (sg && sg.state === "open") {
+            sg.state = "done";
+            sg.doneBy = "gm";
+          }
+        }
+        for (const id of ids) {
+          const f = findRow(tr, id);
+          if (f) f.row.revealed = true;
+        }
+        if (doParent) {
+          const pg = findGoal(tr, qp.parent)?.g;
+          if (pg && pg.state === "open") {
+            pg.state = "done";
+            pg.doneBy = "gm";
+          }
+        }
+        return true;
+      }, { notify: false });
+      if (!done) return;
+      for (const rid of loot) {
+        const r = (Store.get(qp.tid)?.rewards ?? []).find((x) => x.id === rid);
+        if (r?.actor?.uuid) await letPlayersOpen(r.actor.uuid);
+      }
+      const parts = [doSelf && "marked it done", ids.length && `revealed ${ids.length}`, leadq.length && `revealed ${leadq.length === 1 ? "a quest" : `${leadq.length} quests`}`, doParent && "marked the objective done", loot.length && "opened the loot to players"].filter(Boolean);
+      await m.update({ [`flags.${SCOPE}.qprompt.status`]: "done", [`flags.${SCOPE}.qprompt.result`]: parts.length ? `Done: ${parts.join(", ")}.` : "Done." });
+      // Marking it done can complete the objective above it, or bring more to reveal.
+      if (doSelf) await promptCompletion(Store.get(qp.tid), qp.self);
+      if (doParent) await promptCompletion(Store.get(qp.tid), qp.parent);
+    });
+  });
+  box.querySelector('[data-act="skip"]').addEventListener("click", (ev) => {
+    ev.preventDefault();
+    onceFor(message, async (m) => {
+      if (m.getFlag(SCOPE, "qprompt")?.status !== "open") return;
+      await m.update({ [`flags.${SCOPE}.qprompt.status`]: "skipped", [`flags.${SCOPE}.qprompt.result`]: "Left for later. Reveal from the quest when you're ready." });
+    });
+  });
+}
+
 /** Buttons on check cards, and the GM's Apply box on tagged roll cards. */
 function onRenderMessage(message, html) {
   const root = html instanceof HTMLElement ? html : html?.[0];
@@ -1370,6 +1897,8 @@ function onRenderMessage(message, html) {
   if (prop) renderProposal(message, prop, root);
   const ad = message.getFlag?.(SCOPE, "adhoc");
   if (ad) renderAdhoc(message, ad, root);
+  const qp = message.getFlag?.(SCOPE, "qprompt");
+  if (qp) renderCompletion(message, qp, root);
   for (const b of root.querySelectorAll("[data-pct-propose]")) {
     b.addEventListener("click", (ev) => {
       ev.preventDefault();
@@ -1526,6 +2055,16 @@ function collectReminders(d, now) {
         }
       });
     }
+    if (t.kind === "quest") {
+      const k = dkey(t.deadline);
+      if (k !== null) {
+        if (k > now) t.reminded = null;
+        else if (t.reminded !== k) {
+          t.reminded = k;
+          if (t.status === "active" || t.status === "lead") lines.push(`${name} ${k === now ? "is due today" : `was due on ${fmtDate(t.deadline)}`}.`);
+        }
+      }
+    }
     if (t.kind === "checklist") {
       for (const e of t.entries ?? []) {
         const k = dkey(e.closes);
@@ -1670,6 +2209,125 @@ function dateStatus(date, done = false) {
   return `<span class="pct-date-chip ${cls}">${word} ${esc(fmtDate(date))}</span>`;
 }
 
+/** A due date on a quest. */
+function dueChip(date, open = true) {
+  const k = dkey(date);
+  if (k === null) return "";
+  const now = dkey(today());
+  const cls = !open ? "" : k < now ? "pct-closed" : k === now ? "pct-today" : "";
+  return `<span class="pct-date-chip ${cls}">${k < now ? "Was due" : k === now ? "Due today" : "Due"} ${esc(fmtDate(date))}</span>`;
+}
+
+const GOAL_ICON = { open: "fa-regular fa-square", done: "fa-solid fa-square-check", failed: "fa-solid fa-square-xmark" };
+
+/** The quest's picture, giver, location and due date, shared by the GM's and the players' views. */
+function questHead(q, { gm }) {
+  const giver = gm
+    ? q.giver
+      ? `<div class="pct-npc" data-drop="giver">${q.giver.img ? `<img src="${esc(q.giver.img)}" alt="">` : ""}<span><span class="pct-k">Given by</span> <strong>${esc(q.giver.name)}</strong></span>${A("pctQClear", "fa-solid fa-xmark", { tip: "Unlink", data: { path: "giver" } })}</div>`
+      : q.giverText ? `<span><span class="pct-k">Given by</span> ${esc(q.giverText)}</span>` : ""
+    : q.giver ? `<div class="pct-npc">${q.giver.img ? `<img src="${esc(q.giver.img)}" alt="">` : ""}<span><span class="pct-k">Given by</span> <strong>${esc(q.giver.name)}</strong></span></div>` : "";
+  const open = q.status === "active" || q.status === "lead";
+  const facts = [
+    `<span class="pct-chip pct-qs-${esc(q.status)}">${esc(QSTATUS_LABEL[q.status] ?? q.status)}</span>`,
+    q.category ? `<span class="pct-chip">${esc(q.category)}</span>` : "",
+    giver,
+    q.location ? `<span><span class="pct-k">Where</span> ${esc(q.location)}</span>` : "",
+    dueChip(q.deadline, open),
+  ].filter(Boolean).join("");
+  return `<div class="pct-qhead">${q.img ? `<img class="pct-qimg" src="${esc(q.img)}" alt="">` : ""}<div class="pct-line">${facts}</div></div>`;
+}
+
+/** An objective or step's count and its state box. The GM's box is a button; left click done, right click failed. */
+function goalLine(g, path, { gm, steps = null, mode = "all", tick = false }) {
+  const can = tick && (g.state === "open" || (g.state === "done" && g.doneBy === "player"));
+  const box = gm
+    ? A("pctQState", GOAL_ICON[g.state] ?? GOAL_ICON.open, { tip: "Click: done or open. Right-click: failed or open.", data: { goal: g.id }, cls: `pct-qbox pct-q-${g.state}` })
+    : can
+      ? A("pctQTick", GOAL_ICON[g.state] ?? GOAL_ICON.open, { tip: g.state === "open" ? "Mark done. The GM is told." : "Mark open again", data: { goal: g.id, to: g.state === "open" ? "done" : "open" }, cls: `pct-qbox pct-q-${g.state}` })
+      : `<i class="pct-qbox pct-q-${esc(g.state)} ${GOAL_ICON[g.state] ?? GOAL_ICON.open}" ${g.state === "done" && g.doneBy === "gm" && tick ? `data-tooltip="Marked by the GM"` : ""}></i>`;
+  const count = g.count !== null && g.count !== undefined
+    ? gm ? stepper(`${path}.have`, num(g.have), { fmt: (v) => `${v} of ${g.count}` }) : `<span class="pct-chip">${num(g.have)} of ${g.count}</span>`
+    : "";
+  let stepNote = "";
+  if (steps && steps.length) {
+    const sp = stepProgress({ mode }, steps);
+    stepNote = `<span class="pct-chip" data-tooltip="${mode === "any" ? "Done when any one step is done" : "Done when every step not marked optional is done"}">${mode === "any" ? `any one of ${steps.length}` : `${sp.done} of ${sp.of} steps`}${sp.complete && g.state === "open" ? ", ready to mark done" : ""}</span>`;
+  }
+  let link = "";
+  if (gm && g.link?.tid) {
+    const ls = linkState(g.link, Store.data.trackers);
+    link = `<span class="pct-chip pct-qlinkchip ${ls.met ? "pct-met" : ""}" data-tooltip="Watching: when it ${ls.met ? "got there" : "gets there"}, you get a card"><i class="fa-solid fa-link"></i> ${esc(ls.name || "?")}: ${esc(ls.text)}</span>`;
+  }
+  return `${box}<span class="pct-qtext">${para(g.text) || (gm ? "<em>No text</em>" : "")}</span>${g.optional ? `<span class="pct-chip">optional</span>` : ""}${count}${stepNote}${link}`;
+}
+
+/** The quest's objectives (with their steps), journal, leads and rewards. `gm` adds eyes, notes and controls;
+ * `open` names the sections the GM is editing in place, which show their editor instead. */
+function questBody(q, { gm, all = [], open = new Set() }) {
+  const tick = !gm && !game.user.isGM && ["active", "lead"].includes(q.status) && !!game.settings.get(MOD, "playerTicks");
+  const objectives = q.objectives.map((o, i) => {
+    const p = `objectives.${i}`;
+    const steps = o.steps.map((st, j) => `<li class="pct-q-${esc(st.state)}">${gm ? eye(`${p}.steps.${j}`, st.revealed) : ""}${goalLine(st, `${p}.steps.${j}`, { gm, tick })}${gm && st.gm ? `<div class="pct-gm">${para(st.gm)}</div>` : ""}</li>`).join("");
+    return `<li class="pct-q-${esc(o.state)}"><div class="pct-qrow">${gm ? eye(p, o.revealed) : ""}${goalLine(o, p, { gm, steps: o.steps, mode: o.mode, tick })}</div>
+        ${gm && o.gm ? `<div class="pct-gm">${para(o.gm)}</div>` : ""}
+        ${steps ? `<ul class="pct-qsteps"><li class="pct-k">${o.mode === "any" ? "Any one of these" : "All of these"}</li>${steps}</ul>` : ""}</li>`;
+  }).join("");
+  const entries = [...q.entries].map((e, i) => ({ e, i })).reverse().map(({ e, i }) => `<li>${gm ? eye(`entries.${i}`, e.revealed) : ""}${e.date ? `<span class="pct-date-chip">${esc(fmtDate(e.date))}</span>` : ""}<span>${para(e.text)}</span></li>`).join("");
+  const leads = q.leads.map((l, i) => {
+    const to = gm ? all.find((x) => x.id === l.to && x.kind === "quest") : l.to;
+    const go = to ? `<a class="pct-qlink" data-action="pctQuestGo" data-qid="${esc(to.id)}"><i class="fa-solid fa-arrow-right"></i> ${esc(to.name)}${gm && !to.revealed ? " (hidden)" : ""}</a>` : "";
+    return `<li>${gm ? eye(`leads.${i}`, l.revealed) : ""}<i class="fa-solid fa-signs-post"></i><span>${para(l.text)}</span>${go}${gm && l.gm ? `<div class="pct-gm">${para(l.gm)}</div>` : ""}</li>`;
+  }).join("");
+  const rewards = q.rewards.map((r, i) => {
+    const actor = r.actor ? `<a class="pct-npc" data-action="pctOpenActor" data-uuid="${esc(r.actor.uuid)}" data-tooltip="Open the sheet">${r.actor.img ? `<img src="${esc(r.actor.img)}" alt="">` : ""}<strong>${esc(r.actor.name)}</strong></a>` : "";
+    return `<li>${gm ? eye(`rewards.${i}`, r.revealed) : ""}<i class="fa-solid fa-gem"></i><span>${para(r.text)}</span>${actor}${gm && r.gm ? `<div class="pct-gm">${para(r.gm)}</div>` : ""}</li>`;
+  }).join("");
+  const notes = partyNotes(q, { gm });
+  if (!gm) {
+    return `${objectives ? `<div class="pct-sub">Objectives</div><ul class="pct-qgoals">${objectives}</ul>` : ""}
+      ${entries ? `<div class="pct-sub">Journal</div><ul class="pct-qjournal">${entries}</ul>` : ""}
+      ${leads ? `<div class="pct-sub">Leads</div><ul class="pct-qleads">${leads}</ul>` : ""}
+      ${rewards ? `<div class="pct-sub">Rewards</div><ul class="pct-qrewards">${rewards}</ul>` : ""}
+      ${notes}`;
+  }
+  const section = (sec, title, list, add, html, cls) => {
+    const editing = open.has(sec);
+    return `<div class="pct-qsec" data-sec="${sec}"><div class="pct-sub">${esc(title)}
+        ${A("pctQSec", editing ? "fa-solid fa-check" : "fa-solid fa-pen", { tip: editing ? "Done" : `Edit ${title.toLowerCase()}`, data: { sec }, cls: `pct-qsec-btn ${editing ? "pct-on" : ""}` })}
+        ${A("pctAdd", "fa-solid fa-plus", { tip: `Add ${add}`, data: { list, sec }, cls: "pct-qsec-btn" })}</div>
+      ${editing ? `<div class="pct-qsec-edit">${QEDIT[sec](q)}</div>` : html ? `<ul class="${cls}">${html}</ul>` : `<p class="pct-hint">None yet.</p>`}</div>`;
+  };
+  const from = all.flatMap((x) => (x.kind === "quest" && x.id !== q.id ? x.leads.filter((l) => l.to === q.id).map((l) => ({ x, l })) : []));
+  const fromHtml = from.length ? `<div class="pct-qfrom"><span class="pct-k">Pointed to by</span>${from.map(({ x, l }) => `<a class="pct-qlink" data-action="pctQuestGo" data-qid="${esc(x.id)}" data-tooltip="${esc(l.text)}">${l.revealed ? "" : `<i class="fa-solid fa-eye-slash"></i> `}${esc(x.name)}</a>`).join("")}</div>` : "";
+  return `${section("objectives", "Objectives", "objectives", "an objective", objectives, "pct-qgoals")}
+    ${section("entries", "Journal", "entries", "a journal entry", entries, "pct-qjournal")}
+    ${section("leads", "Leads", "leads", "a lead", leads, "pct-qleads")}${fromHtml}
+    ${section("rewards", "Rewards", "rewards", "a reward", rewards, "pct-qrewards")}
+    ${notes}`;
+}
+
+/** The party's shared notes on a quest: anyone adds one, signed; its author or the GM deletes it. */
+function partyNotes(q, { gm }) {
+  const preview = !gm && game.user.isGM;
+  const rows = (q.pnotes ?? []).map((n) => `<li><strong>${esc(n.name)}</strong><span>${para(n.text)}</span>${!preview && (gm || n.by === game.user.id) ? A("pctQNoteDel", "fa-solid fa-xmark", { tip: "Delete this note", data: { note: n.id } }) : ""}</li>`).join("");
+  return `<div class="pct-qnotes"><div class="pct-sub">Party notes</div>${rows ? `<ul>${rows}</ul>` : `<p class="pct-hint">No notes yet.${gm ? "" : " Anything the party wants to remember goes here."}</p>`}
+      ${preview ? "" : `<div class="pct-qnote-add"><textarea rows="2" placeholder="${gm ? "A note, signed GM" : "Add a note for the party"}" maxlength="${NOTE_LEN}"></textarea>${A("pctQNoteAdd", "fa-solid fa-plus", { label: "Add note" })}</div>`}</div>`;
+}
+
+/** The GM's quest, with the details and GM notes editable in place too. */
+function questGM(t, open) {
+  const details = open.has("details")
+    ? `<div class="pct-qsec-edit">${QEDIT.details(t)}</div>`
+    : `${t.desc ? `<p class="pct-desc">${para(t.desc)}</p>` : ""}${questHead(t, { gm: true })}`;
+  const notesOpen = open.has("notes");
+  const detailsOpen = open.has("details");
+  return `<div class="pct-qsec" data-sec="details"><div class="pct-sub">Details ${A("pctQSec", detailsOpen ? "fa-solid fa-check" : "fa-solid fa-pen", { tip: detailsOpen ? "Done" : "Edit the name, summary, status, category, giver, location, due date and picture", data: { sec: "details" }, cls: `pct-qsec-btn ${detailsOpen ? "pct-on" : ""}` })}</div>${details}</div>
+    ${questBody(t, { gm: true, all: Store.data.trackers, open })}
+    <div class="pct-qsec" data-sec="notes"><div class="pct-sub">GM notes ${A("pctQSec", notesOpen ? "fa-solid fa-check" : "fa-solid fa-pen", { tip: notesOpen ? "Done" : "Edit GM notes", data: { sec: "notes" }, cls: `pct-qsec-btn ${notesOpen ? "pct-on" : ""}` })}</div>
+      ${notesOpen ? `<div class="pct-qsec-edit">${QEDIT.notes(t)}</div>` : t.notes ? `<div class="pct-gm">${para(t.notes)}</div>` : `<p class="pct-hint">None.</p>`}</div>`;
+}
+
 /* ------------------------------------------------------------------ */
 /* GM view of each kind                                                */
 /* ------------------------------------------------------------------ */
@@ -1691,6 +2349,10 @@ function challengeTally(successes, goal, failures, limit, { numbers = true } = {
 }
 
 const GM = {
+  quest(t) {
+    return questGM(t, new Set());
+  },
+
   challenge(t) {
     const goal = nullNum(t.goal), limit = nullNum(t.limit), rounds = nullNum(t.rounds);
     const st = challengeStatus(t);
@@ -1867,7 +2529,79 @@ const GM = {
 /* Editing each kind                                                   */
 /* ------------------------------------------------------------------ */
 
+/** A goal's fields in the editor: what players see, the GM's note, optional, and a count. */
+const goalEdit = (g, p, what, t) => `<div class="pct-line">${L(what, F.text(`${p}.text`, g.text, what === "Step" ? "Get disguises" : "Gain access to the castle"), "pct-grow")}${L("Count", F.num(`${p}.count`, g.count, "none", "pct-dc"))}${F.bool(`${p}.optional`, g.optional, "Optional")}</div>
+    ${L("GM only", F.text(`${p}.gm`, g.gm, "What it really takes, what it turns up"), "pct-block")}${t ? `${linkEdit(g, p)}${onDoneEdit(g, p, t)}` : ""}`;
+
+/** "Done when the Alarm clock is full": a goal watching another tracker. */
+function linkEdit(g, p) {
+  const others = Store.data.trackers.filter((x) => x.kind !== "quest" && LINK_CONDS[x.kind]);
+  const t = others.find((x) => x.id === g.link?.tid) ?? null;
+  const pick = L("Watch", F.select(`${p}.link.tid`, t ? t.id : "", [["", "nothing"], ...others.map((x) => [x.id, `${KIND_INFO[x.kind].label}: ${x.name}`])]));
+  if (!t) return `<div class="pct-line pct-qlinkedit">${pick}</div>`;
+  const cond = linkCond(g.link, t);
+  const conds = LINK_CONDS[t.kind];
+  const how = conds.length > 1 ? F.select(`${p}.link.cond`, cond, conds) : `<span>${esc(conds[0][1])}</span>`;
+  const extra = cond === "atLeast"
+    ? F.num(`${p}.link.at`, g.link.at, "value", "pct-dc")
+    : cond === "entry" ? F.select(`${p}.link.entry`, g.link.entry ?? "", [["", "pick an entry"], ...(t.entries ?? []).map((e) => [e.id, shortText(e.label, 40) || "(untitled)"])]) : "";
+  return `<div class="pct-line pct-qlinkedit">${pick}${how}${extra}<span class="pct-hint">When it does, you get a card offering to mark this done.</span></div>`;
+}
+
+/** <details> boxes the GM has open in an editor, kept across redraws in this window. */
+const openDetails = new Set();
+
+/** Which rows of the quest finishing this goal offers to reveal. */
+function onDoneEdit(g, p, t) {
+  const rows = [];
+  for (const o of t.objectives) {
+    if (o.id !== g.id) rows.push(o);
+    for (const st of o.steps) if (st.id !== g.id) rows.push(st);
+  }
+  rows.push(...t.entries, ...t.leads, ...t.rewards);
+  const key = `${t.id}:${g.id}`;
+  const picked = new Set(g.onDone ?? []);
+  const boxes = rows.map((r) => `<label class="pct-chk"><input type="checkbox" data-path="${p}.onDone" data-type="idlist" value="${esc(r.id)}" ${picked.has(r.id) ? "checked" : ""}> <span>${esc(rowLabel(t, r.id))}</span></label>`).join("");
+  return `<details class="pct-ondone" data-key="${esc(key)}" ${openDetails.has(key) ? "open" : ""}><summary>When it's done, offer to reveal (${picked.size})</summary>${boxes || `<p class="pct-hint">Nothing else in this quest yet.</p>`}</details>`;
+}
+
+/** Quest editors, one per section, so the GM can edit a part without opening the whole quest. */
+const QEDIT = {
+  meta(t) {
+    const cats = [...new Set(["Main", "Side", ...Store.data.trackers.filter((x) => x.kind === "quest").map((x) => x.category).filter(Boolean)])];
+    const giver = t.giver
+      ? `<div class="pct-npc" data-drop="giver">${t.giver.img ? `<img src="${esc(t.giver.img)}" alt="">` : ""}<strong>${esc(t.giver.name)}</strong>${A("pctQClear", "fa-solid fa-xmark", { tip: "Unlink", data: { path: "giver" } })}</div>`
+      : `<div class="pct-npc pct-drop" data-drop="giver"><i class="fa-solid fa-user-plus"></i> Drop the quest giver here</div>`;
+    return `<div class="pct-line">${L("Status", F.select("status", t.status, QSTATUS.map((x) => [x, QSTATUS_LABEL[x]])))}
+        ${L("Category", `<input type="text" list="pct-qcats" data-path="category" value="${esc(t.category)}" placeholder="Main" class="pct-w8">`)}<datalist id="pct-qcats">${cats.map((c) => `<option value="${esc(c)}">`).join("")}</datalist>
+        ${L("Due", F.date("deadline", t.deadline))}${F.bool("showDue", t.showDue !== false, "Players see the due date", "Off: a secret deadline. You still get the reminder.")}</div>
+      <div class="pct-line">${giver}${t.giver ? "" : L("or name them", F.text("giverText", t.giverText, "Maud Holloway"), "pct-grow")}${L("Where", F.text("location", t.location, "Ridge Road"), "pct-grow")}</div>
+      <div class="pct-line">${L("Picture", F.text("img", t.img, "path to an image"), "pct-grow")}${A("pctQImg", "fa-solid fa-file-image", { tip: "Choose a picture" })}</div>`;
+  },
+  details: (t) => `<div class="pct-edit">${L("Name", F.text("name", t.name), "pct-block")}
+      ${L("Players see", F.area("desc", t.desc, "The quest's summary, shown to players when you reveal it"), "pct-block")}${QEDIT.meta(t)}</div>`,
+  notes: (t) => F.area("notes", t.notes, "Only the GM sees these", 4),
+  objectives: (t) => listEditor("objectives", t.objectives, (o, p) => `${goalEdit(o, p, "Objective", t)}
+      <div class="pct-line"><span class="pct-k">Steps</span>${L("Done when", F.select(`${p}.mode`, o.mode, [["all", "every step is done"], ["any", "any one step is done"]]))}</div>
+      <div class="pct-nested">${listEditor(`${p}.steps`, o.steps, (st, sp) => goalEdit(st, sp, "Step", t), "Step")}</div>`, "Objective"),
+  entries: (t) => listEditor("entries", t.entries, (e, p) => `${L("Date", F.date(`${p}.date`, e.date))}${L("Entry", F.area(`${p}.text`, e.text, "Spoke to the ferrywoman; she saw riders cross at dusk.", 2), "pct-grow")}`, "Journal entry"),
+  leads(t) {
+    const others = Store.data.trackers.filter((x) => x.kind === "quest" && x.id !== t.id);
+    return listEditor("leads", t.leads, (l, p) => `<div class="pct-line">${L("Lead", F.text(`${p}.text`, l.text, "A smuggler at the docks knows a way in"), "pct-grow")}${L("Points to", F.select(`${p}.to`, l.to, [["", "nothing"], ...others.map((x) => [x.id, x.name])]))}</div>
+      ${L("GM only", F.text(`${p}.gm`, l.gm), "pct-block")}`, "Lead");
+  },
+  rewards: (t) => listEditor("rewards", t.rewards, (r, p) => `<div class="pct-line">${L("Reward", F.text(`${p}.text`, r.text, "200 gp and the captain's favor"), "pct-grow")}
+        ${r.actor ? `<div class="pct-npc" data-drop="${p}.actor">${r.actor.img ? `<img src="${esc(r.actor.img)}" alt="">` : ""}<strong>${esc(r.actor.name)}</strong>${A("pctQClear", "fa-solid fa-xmark", { tip: "Unlink", data: { path: `${p}.actor` } })}</div>` : `<div class="pct-npc pct-drop" data-drop="${p}.actor"><i class="fa-solid fa-box-open"></i> Drop a loot actor</div>`}</div>
+      ${L("GM only", F.text(`${p}.gm`, r.gm), "pct-block")}`, "Reward"),
+};
+
 const EDIT = {
+  quest: (t) => `${QEDIT.meta(t)}
+      <div class="pct-sub">Objectives. Players see each one when you reveal it; steps are revealed on their own too.</div>${QEDIT.objectives(t)}
+      <div class="pct-sub">Journal: what happened, newest shown first. Players see each entry when you reveal it.</div>${QEDIT.entries(t)}
+      <div class="pct-sub">Leads: where to go next. A lead can point to another quest.</div>${QEDIT.leads(t)}
+      <div class="pct-sub">Rewards. Drop a loot actor on a reward for treasure.</div>${QEDIT.rewards(t)}`,
+
   challenge: (t) => `<div class="pct-line">${L("Successes needed", F.num("goal", t.goal, "none"))}${L("Failures allowed", F.num("limit", t.limit, "no limit"))}${L("Rounds", F.num("rounds", t.rounds, "no limit"))}
       ${F.bool("showCount", t.showCount, "Players see the counts", "Off: players see the approaches but not how close they are")}
       ${F.bool("explain", t.explain !== false, "Proposals need what and why", "Off: players can propose with just a skill and tell you the rest at the table")}
@@ -1959,6 +2693,10 @@ function editView(t) {
 /* ------------------------------------------------------------------ */
 
 const PLAYER = {
+  quest(p) {
+    return `${questHead(p, { gm: false })}${questBody(p, { gm: false })}`;
+  },
+
   challenge(p) {
     const tally = p.successes !== null ? challengeTally(p.successes, p.goal, p.failures, p.limit) : "";
     const status = p.status ? `<p class="pct-big">${STATUS_TEXT[p.status]}</p>` : "";
@@ -2037,6 +2775,12 @@ function chatCard(p) {
   };
   let body = "";
   switch (p.kind) {
+    case "quest": {
+      const goals = p.objectives.map((o) => `<li><i class="${GOAL_ICON[o.state] ?? GOAL_ICON.open}"></i> ${esc(o.text)}${o.count !== null ? ` (${o.have} of ${o.count})` : ""}</li>`).join("");
+      const latest = p.entries.at(-1);
+      body = `<p><strong>${esc(QSTATUS_LABEL[p.status] ?? "")}</strong>${p.category ? `, ${esc(p.category)}` : ""}</p>${latest ? `<p><em>${para(latest.text)}</em></p>` : ""}${goals ? `<ul class="pct-chat-list">${goals}</ul>` : ""}`;
+      break;
+    }
     case "reputation": {
       const tier = p.tiers.find((x) => x.id === p.tier);
       body = `<p class="pct-chat-big">${esc(tier?.label ?? "")}${p.value !== null ? ` (${signed(p.value)})` : ""}</p>${tier?.text ? `<p>${para(tier.text)}</p>` : ""}`;
@@ -2095,6 +2839,7 @@ const TYPING = "textarea, select, input:not([type=checkbox]):not([type=radio])";
 function refresh() {
   clearTimeout(refreshTimer);
   refreshTimer = setTimeout(() => {
+    renderPanel();
     for (const app of openApps) {
       if (!app.rendered) continue;
       // Don't redraw under someone who is typing: the window's focusout calls refresh again when they leave the form.
@@ -2108,6 +2853,226 @@ function refresh() {
   }, 120);
 }
 
+/* ------------------------------------------------------------------ */
+/* Tracked-quest panel                                                 */
+/* ------------------------------------------------------------------ */
+
+const PIN_KEY = `${MOD}.pins`, PANEL_KEY = `${MOD}.panel`, PANEL_MAX = 3;
+function readJSON(key, fallback) {
+  try {
+    return JSON.parse(localStorage.getItem(key)) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+function writeJSON(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    /* no storage: it lasts until the page reloads */
+  }
+}
+/** The quests this user pinned, kept in this browser. */
+function pinned() {
+  const v = readJSON(PIN_KEY, []);
+  return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+}
+
+/** What the panel shows, in order: the party's focus, then this user's pins. Open quests only, at most three. */
+function panelQuests(quests, pins) {
+  const byId = new Map(quests.map((q) => [q.id, q]));
+  const ids = [...quests.filter((q) => q.focus).map((q) => q.id), ...pins];
+  return [...new Set(ids)].map((id) => byId.get(id)).filter((q) => q && OPEN_Q.includes(q.status)).slice(0, PANEL_MAX);
+}
+
+/** Pin a quest to this user's panel, or unpin it. Pins of quests that are gone or finished don't count. */
+function togglePin(id) {
+  const pins = pinned();
+  if (pins.includes(id)) {
+    writeJSON(PIN_KEY, pins.filter((x) => x !== id));
+  } else {
+    const open = visibleTrackers().filter((t) => t.kind === "quest" && OPEN_Q.includes(t.status));
+    const live = new Set(open.map((t) => t.id));
+    const kept = pins.filter((x) => live.has(x));
+    const focus = open.filter((t) => t.focus && !kept.includes(t.id)).map((t) => t.id);
+    if (focus.includes(id)) return void ui.notifications.info("That quest is the party's focus, so it's in the panel already.");
+    if (kept.length + focus.length >= PANEL_MAX) {
+      ui.notifications.warn(`The quest panel shows ${PANEL_MAX} quests${focus.length ? `, ${focus.length} of them the party's focus` : ""}. Unpin one first.`);
+      return;
+    }
+    writeJSON(PIN_KEY, [...kept, id]);
+    if (!game.settings.get(MOD, "questPanel")) ui.notifications.info("Pinned. The quest panel is turned off for you in this module's settings.");
+  }
+  refresh();
+}
+
+/** The focus star (GM) and the pin, for a quest's card header. */
+function pinTools(t, gm) {
+  const on = pinned().includes(t.id);
+  const out = [];
+  if (gm) out.push(A("pctQFocus", t.focus ? "fa-solid fa-star" : "fa-regular fa-star", { tip: t.focus ? "The party's focus: it shows in everyone's quest panel. Click to stop." : "Make this the party's focus: it shows in everyone's quest panel while it's active or a lead.", cls: t.focus ? "pct-on" : "" }));
+  if (on || OPEN_Q.includes(t.status)) out.push(A("pctQPin", "fa-solid fa-thumbtack", { tip: on ? "Pinned to your quest panel. Click to unpin." : "Pin to your quest panel", cls: on ? "pct-on" : "" }));
+  return out.join("");
+}
+
+/** The GM marks a goal done or open (click), or failed or open (right click), then gets the card if there's anything to offer. */
+async function setGoalState(tid, { path = null, goal = null }, right = false) {
+  const done = await mutateTracker(tid, (t) => {
+    const g = goal ? findGoal(t, goal)?.g : foundry.utils.getProperty(t, path);
+    if (!g) return;
+    const to = right ? (g.state === "failed" ? "open" : "failed") : g.state === "done" ? "open" : "done";
+    g.state = to;
+    g.doneBy = to === "open" ? null : "gm";
+    return to === "done" ? g.id : undefined;
+  }, { notify: false });
+  if (done) await promptCompletion(Store.get(tid), done);
+}
+
+let panelEl = null;
+const qpBtn = (qp, icon, tip, data = {}) => `<a class="pct-qp-btn" data-qp="${qp}" ${dataAttrs(data)} data-tooltip="${esc(tip)}"><i class="${icon}"></i></a>`;
+
+/** One open objective or step: a box to tick, its text, its count. The GM also sees what players don't. */
+function panelGoal(q, g, tick, steps = null) {
+  const gm = game.user.isGM;
+  const box = tick
+    ? `<a class="pct-qp-box" data-qp="tick" data-tid="${esc(q.id)}" data-goal="${esc(g.id)}" data-tooltip="${gm ? "Click: done. Right-click: failed." : "Mark done. The GM is told."}"><i class="fa-regular fa-square"></i></a>`
+    : `<i class="pct-qp-box fa-regular fa-square"></i>`;
+  const chips = [g.count !== null && g.count !== undefined ? `${num(g.have)} of ${g.count}` : "", g.optional ? "optional" : ""];
+  if (steps?.length) {
+    const sp = stepProgress(g, steps);
+    chips.push(g.mode === "any" ? `any one of ${steps.length}` : `${sp.done} of ${sp.of} steps`);
+  }
+  const hidden = gm && !g.revealed ? `<i class="fa-solid fa-eye-slash" data-tooltip="Hidden from players"></i> ` : "";
+  return `<div class="pct-qp-goal ${gm && !g.revealed ? "pct-qp-hidden" : ""}">${box}<span class="pct-qp-text">${hidden}${esc(g.text)}</span>${chips.filter(Boolean).map((c) => `<span class="pct-qp-chip">${esc(c)}</span>`).join("")}</div>`;
+}
+
+function panelQuest(q, folded, pins) {
+  const gm = game.user.isGM;
+  const tick = gm || !!game.settings.get(MOD, "playerTicks");
+  const main = q.objectives.filter((o) => !o.optional);
+  const done = main.filter((o) => o.state === "done").length;
+  const shut = folded.has(q.id);
+  const goals = shut ? "" : q.objectives.filter((o) => o.state === "open").map((o) => {
+    const steps = o.steps.filter((st) => st.state === "open").map((st) => `<li>${panelGoal(q, st, tick)}</li>`).join("");
+    return `<li>${panelGoal(q, o, tick, o.steps)}${steps ? `<ul>${steps}</ul>` : ""}</li>`;
+  }).join("");
+  const marks = [
+    gm && !q.revealed ? `<i class="fa-solid fa-eye-slash" data-tooltip="Hidden from players"></i>` : "",
+    q.focus ? `<i class="fa-solid fa-star" data-tooltip="The party's focus"></i>` : "",
+  ].join("");
+  const unpin = pins.includes(q.id) ? qpBtn("unpin", "fa-solid fa-xmark", "Unpin", { tid: q.id }) : "";
+  return `<div class="pct-qp-quest pct-qp-${esc(q.status)}">
+      <div class="pct-qp-title">${qpBtn("fold", shut ? "fa-solid fa-caret-right" : "fa-solid fa-caret-down", shut ? "Show objectives" : "Hide objectives", { tid: q.id })}<a class="pct-qp-name" data-qp="open" data-tid="${esc(q.id)}" data-tooltip="Open in the trackers window">${marks}${esc(q.name)}</a>${main.length ? `<span class="pct-qp-count">${done}/${main.length}</span>` : ""}${unpin}</div>
+      ${shut ? "" : `${q.deadline ? `<div class="pct-qp-due">${dueChip(q.deadline)}</div>` : ""}${goals ? `<ul class="pct-qp-goals">${goals}</ul>` : `<p class="pct-qp-none">No open objectives.</p>`}`}
+    </div>`;
+}
+
+/** The quests this user sees in the panel, or null when there's no panel for them. */
+function panelData() {
+  if (!game.settings.get(MOD, "questPanel")) return null;
+  if (game.user.isGM ? !storeReady || Store.broken : !game.settings.get(MOD, "playerAccess")) return null;
+  return panelQuests(visibleTrackers().filter((t) => t.kind === "quest"), pinned());
+}
+
+/** Draw the panel, or take it away when there's nothing to show. */
+function renderPanel() {
+  const list = panelData();
+  if (!list?.length) {
+    panelEl?.remove();
+    panelEl = null;
+    return;
+  }
+  if (!panelEl) {
+    panelEl = document.createElement("section");
+    panelEl.id = "pct-qpanel";
+    panelEl.className = "pct-qpanel";
+    panelEl.addEventListener("click", onPanelClick);
+    panelEl.addEventListener("contextmenu", onPanelClick);
+    panelEl.addEventListener("pointerdown", onPanelDrag);
+    (document.getElementById("interface") ?? document.body).append(panelEl);
+  }
+  const st = readJSON(PANEL_KEY, {});
+  const folded = new Set(Array.isArray(st.folded) ? st.folded : []);
+  const pins = pinned();
+  panelEl.classList.toggle("pct-qp-min", !!st.min);
+  panelEl.innerHTML = `<header class="pct-qp-head" data-tooltip="Drag to move"><i class="fa-solid fa-scroll"></i><span>Quests</span>${qpBtn("min", st.min ? "fa-solid fa-chevron-down" : "fa-solid fa-chevron-up", st.min ? "Show the panel" : "Shrink the panel")}</header>
+    ${st.min ? "" : `<div class="pct-qp-body">${list.map((q) => panelQuest(q, folded, pins)).join("")}</div>`}`;
+  placePanel();
+}
+
+/** Keep the panel where this user put it, inside the screen. It starts near the top, left of the sidebar. */
+function placePanel() {
+  if (!panelEl) return;
+  const st = readJSON(PANEL_KEY, {});
+  const w = panelEl.offsetWidth || 280;
+  const side = document.getElementById("sidebar")?.getBoundingClientRect().left ?? window.innerWidth;
+  const left = clamp(Number.isFinite(st.left) ? st.left : side - w - 16, 0, Math.max(0, window.innerWidth - w));
+  const top = clamp(Number.isFinite(st.top) ? st.top : 64, 0, Math.max(0, window.innerHeight - 40));
+  panelEl.style.left = `${left}px`;
+  panelEl.style.top = `${top}px`;
+}
+
+function onPanelDrag(ev) {
+  if (ev.button !== 0 || !ev.target.closest(".pct-qp-head") || ev.target.closest("[data-qp]")) return;
+  ev.preventDefault();
+  const r = panelEl.getBoundingClientRect();
+  const dx = ev.clientX - r.left, dy = ev.clientY - r.top;
+  const move = (e) => {
+    panelEl.style.left = `${e.clientX - dx}px`;
+    panelEl.style.top = `${e.clientY - dy}px`;
+  };
+  const up = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+    if (!panelEl) return;
+    const st = readJSON(PANEL_KEY, {});
+    writeJSON(PANEL_KEY, { ...st, left: parseInt(panelEl.style.left, 10), top: parseInt(panelEl.style.top, 10) });
+    placePanel();
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
+}
+
+/** Open the trackers window on a quest. */
+function openQuest(id) {
+  if (!game.user.isGM && !game.settings.get(MOD, "playerAccess")) return;
+  const app = [...openApps][0] ?? new TrackersApp();
+  app.state.tab = "quest";
+  app.state.quest = id;
+  saveUI(app.state);
+  app.render({ force: true });
+  if (app.minimized) app.maximize();
+}
+
+async function onPanelClick(ev) {
+  const el = ev.target.closest("[data-qp]");
+  if (!el || !panelEl?.contains(el)) return;
+  const { qp, tid } = el.dataset;
+  const right = ev.type === "contextmenu";
+  if (right && !(qp === "tick" && game.user.isGM)) return;
+  ev.preventDefault();
+  const st = readJSON(PANEL_KEY, {});
+  if (qp === "min") {
+    writeJSON(PANEL_KEY, { ...st, min: !st.min });
+    renderPanel();
+  } else if (qp === "fold") {
+    const folded = new Set(Array.isArray(st.folded) ? st.folded : []);
+    folded.has(tid) ? folded.delete(tid) : folded.add(tid);
+    writeJSON(PANEL_KEY, { ...st, folded: [...folded] });
+    renderPanel();
+  } else if (qp === "open") {
+    openQuest(tid);
+  } else if (qp === "unpin") {
+    togglePin(tid);
+  } else if (qp === "tick") {
+    if (el.classList.contains("pct-busy")) return;
+    el.classList.add("pct-busy");
+    setTimeout(() => el.classList.remove("pct-busy"), 5000);
+    if (game.user.isGM) await setGoalState(tid, { goal: el.dataset.goal }, right);
+    else if (!tickToGM(tid, el.dataset.goal, "done")) el.classList.remove("pct-busy");
+  }
+}
+
 /** Tab, folded cards and open GM-notes boxes, kept in this browser across redraws and reopening. */
 const UI_KEY = `${MOD}.ui`;
 function loadUI() {
@@ -2119,7 +3084,7 @@ function loadUI() {
 }
 function saveUI(state) {
   try {
-    localStorage.setItem(UI_KEY, JSON.stringify({ tab: state.tab, closed: [...state.closed], notesOpen: [...state.notesOpen] }));
+    localStorage.setItem(UI_KEY, JSON.stringify({ tab: state.tab, closed: [...state.closed], notesOpen: [...state.notesOpen], quest: state.quest }));
   } catch {
     /* no storage: the state lives only in this window */
   }
@@ -2165,6 +3130,17 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
       pctEndRound: TrackersApp.#onEndRound,
       pctHalve: TrackersApp.#onHalve,
       pctClearNpc: TrackersApp.#onClearNpc,
+      pctQuestGo: TrackersApp.#onQuestGo,
+      pctQSec: TrackersApp.#onQSec,
+      pctQTick: TrackersApp.#onQTick,
+      pctQNoteAdd: TrackersApp.#onQNoteAdd,
+      pctQNoteDel: TrackersApp.#onQNoteDel,
+      pctQState: { handler: TrackersApp.#onQState, buttons: [0, 2] },
+      pctQFocus: TrackersApp.#onQFocus,
+      pctQPin: TrackersApp.#onQPin,
+      pctQClear: TrackersApp.#onQClear,
+      pctQImg: TrackersApp.#onQImg,
+      pctOpenActor: TrackersApp.#onOpenActor,
       pctPreview: TrackersApp.#onPreview,
       pctPresets: TrackersApp.#onPresets,
     },
@@ -2172,7 +3148,7 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
 
   state = (() => {
     const ui = loadUI();
-    return { tab: ui.tab ?? null, closed: new Set(ui.closed ?? []), notesOpen: new Set(ui.notesOpen ?? []), edit: new Set(), preview: false };
+    return { tab: ui.tab ?? null, closed: new Set(ui.closed ?? []), notesOpen: new Set(ui.notesOpen ?? []), edit: new Set(), preview: false, quest: ui.quest ?? null, qedit: new Set() };
   })();
 
   /** True when the window shows the GM's full view. */
@@ -2205,7 +3181,8 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     el.className = "pct";
     const rail = kinds.map((k) => {
       const n = all.filter((t) => t.kind === k).length;
-      return `<a data-action="pctTab" data-kind="${k}" class="${this.state.tab === k ? "active" : ""}"><i class="${KIND_INFO[k].icon}"></i><span>${esc(KIND_INFO[k].tab)}</span>${n ? `<em>${n}</em>` : ""}</a>`;
+      const dot = k === "quest" && !game.user.isGM && all.some((t) => t.kind === "quest" && unseen(t) && !(this.state.tab === "quest" && t.id === this.state.quest)) ? `<b class="pct-qdot" data-tooltip="Something new"></b>` : "";
+      return `<a data-action="pctTab" data-kind="${k}" class="${this.state.tab === k ? "active" : ""}"><i class="${KIND_INFO[k].icon}"></i><span>${esc(KIND_INFO[k].tab)}</span>${dot}${n ? `<em>${n}</em>` : ""}</a>`;
     }).join("");
     const foot = game.user.isGM
       ? `<div class="pct-rail-foot">
@@ -2224,27 +3201,58 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     const info = KIND_INFO[kind];
     const head = `<header class="pct-tab-head"><div><h2><i class="${info.icon}"></i> ${esc(info.tab)}</h2>${this.isGM ? `<p class="pct-hint">${esc(info.blurb)}</p>` : ""}</div>
         ${this.isGM ? A("pctNew", "fa-solid fa-plus", { label: `New ${info.label.toLowerCase()}`, data: { kind }, cls: "pct-new" }) : ""}</header>`;
+    if (kind === "quest") return head + this.#quests(list);
     const cards = list.map((t) => this.#card(t)).join("") || `<p class="pct-hint">${this.isGM ? "None yet." : "Nothing here yet."}</p>`;
     return head + cards;
+  }
+
+  /** Quests: a list grouped by status beside the chosen quest, like a journal. */
+  #quests(list) {
+    if (!list.length) return `<p class="pct-hint">${this.isGM ? "None yet." : "Nothing here yet."}</p>`;
+    if (!list.some((q) => q.id === this.state.quest)) this.state.quest = (list.find((q) => q.status === "active") ?? list[0]).id;
+    const pins = new Set(pinned());
+    const groups = QGROUPS.map((st) => {
+      const rows = list.filter((q) => (QSTATUS.includes(q.status) ? q.status : "active") === st);
+      if (!rows.length) return "";
+      return `<div class="pct-sub">${esc(QSTATUS_LABEL[st])} <em>${rows.length}</em></div><ul>${rows.map((q) => {
+        const main = q.objectives.filter((o) => !o.optional);
+        const done = main.filter((o) => o.state === "done").length;
+        const mark = game.user.isGM || q.id === this.state.quest ? "" : unseen(q);
+        return `<li><a data-action="pctQuestGo" data-qid="${esc(q.id)}" class="pct-qli-${esc(q.status)} ${q.id === this.state.quest ? "active" : ""} ${this.isGM && !q.revealed ? "pct-hiddenq" : ""}">
+            ${this.isGM && !q.revealed ? `<i class="fa-solid fa-eye-slash" data-tooltip="Hidden from players"></i>` : ""}<span>${esc(q.name)}</span>${q.focus ? `<i class="fa-solid fa-star pct-qli-ico" data-tooltip="Party focus"></i>` : ""}${pins.has(q.id) ? `<i class="fa-solid fa-thumbtack pct-qli-ico" data-tooltip="Pinned to your quest panel"></i>` : ""}${mark ? `<b class="pct-qnew">${mark === "new" ? "New" : "Updated"}</b>` : ""}
+            <small>${[q.category, main.length ? `${done}/${main.length}` : ""].filter(Boolean).map(esc).join(" · ")}</small></a></li>`;
+      }).join("")}</ul>`;
+    }).join("");
+    const chosen = list.find((q) => q.id === this.state.quest);
+    if (chosen && !game.user.isGM) markSeen(chosen);
+    return `<div class="pct-quests"><nav class="pct-qlist">${groups}</nav><div class="pct-qdetail">${chosen ? this.#card(chosen) : ""}</div></div>`;
   }
 
   #card(t) {
     const closed = this.state.closed.has(t.id);
     if (!this.isGM) {
-      return `<article class="pct-card" data-tid="${esc(t.id)}">
-          <header>${A("pctFold", closed ? "fa-solid fa-caret-right" : "fa-solid fa-caret-down", { cls: "pct-fold" })}<h3>${esc(t.name)}</h3></header>
+      return `<article class="pct-card ${t.kind === "quest" ? `pct-qcard-${esc(t.status)}` : ""}" data-tid="${esc(t.id)}">
+          <header>${A("pctFold", closed ? "fa-solid fa-caret-right" : "fa-solid fa-caret-down", { cls: "pct-fold" })}<h3>${esc(t.name)}</h3>${t.kind === "quest" ? `<span class="pct-tools">${pinTools(t, false)}</span>` : ""}</header>
           ${closed ? "" : `<div class="pct-card-body">${t.desc ? `<p class="pct-desc">${para(t.desc)}</p>` : ""}${PLAYER[t.kind](t)}</div>`}
         </article>`;
     }
     const editing = this.state.edit.has(t.id);
     const tools = [
+      t.kind === "quest" ? pinTools(t, true) : "",
       A("pctReveal", t.revealed ? "fa-solid fa-eye" : "fa-solid fa-eye-slash", { tip: t.revealed ? "Shown to players. Click to hide." : "Hidden from players. Click to show.", cls: `pct-eye ${t.revealed ? "pct-on" : ""}` }),
       A("pctPost", "fa-solid fa-comment", { tip: "Post to chat what players see" }),
       A("pctEdit", "fa-solid fa-pen", { tip: editing ? "Done editing" : "Edit", cls: editing ? "pct-on" : "" }),
       A("pctDelete", "fa-solid fa-trash", { tip: "Delete" }),
     ].join("");
+    const secs = new Set([...this.state.qedit].filter((k) => k.startsWith(`${t.id}:`)).map((k) => k.slice(t.id.length + 1)));
+    if (t.kind === "quest" && !closed && !editing) {
+      return `<article class="pct-card pct-qcard-${esc(t.status)} ${t.revealed ? "" : "pct-hidden"}" data-tid="${esc(t.id)}" data-drop-card>
+          <header>${A("pctFold", "fa-solid fa-caret-down", { cls: "pct-fold" })}<h3>${esc(t.name)}</h3><span class="pct-sum">${esc(summary(t))}</span><span class="pct-tools">${tools}</span></header>
+          <div class="pct-card-body">${questGM(t, secs)}</div>
+        </article>`;
+    }
     const body = closed ? "" : `<div class="pct-card-body">${editing ? editView(t) : `${t.desc ? `<p class="pct-desc">${para(t.desc)}</p>` : ""}${GM[t.kind](t)}${t.notes ? `<details class="pct-notes-box" ${this.state.notesOpen.has(t.id) ? "open" : ""}><summary>GM notes</summary><div class="pct-gm">${para(t.notes)}</div></details>` : ""}`}</div>`;
-    return `<article class="pct-card ${t.revealed ? "" : "pct-hidden"}" data-tid="${esc(t.id)}" data-drop-card>
+    return `<article class="pct-card ${t.kind === "quest" ? `pct-qcard-${esc(t.status)}` : ""} ${t.revealed ? "" : "pct-hidden"}" data-tid="${esc(t.id)}" data-drop-card>
         <header>${A("pctFold", closed ? "fa-solid fa-caret-right" : "fa-solid fa-caret-down", { cls: "pct-fold" })}<h3>${esc(t.name)}</h3><span class="pct-sum">${esc(summary(t))}</span><span class="pct-tools">${tools}</span></header>
         ${body}
       </article>`;
@@ -2268,6 +3276,10 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     // <details> doesn't bubble its toggle event, so listen in the capture phase.
     this.element.addEventListener("toggle", (ev) => {
       const box = ev.target;
+      if (box?.classList?.contains("pct-ondone")) {
+        box.open ? openDetails.add(box.dataset.key) : openDetails.delete(box.dataset.key);
+        return;
+      }
       if (!box?.classList?.contains("pct-notes-box")) return;
       const id = box.closest("[data-tid]")?.dataset.tid;
       if (!id) return;
@@ -2300,6 +3312,13 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
         ui.notifications.warn(`Couldn't read "${el.value}" as a date. Try "15 ${months()[0]?.short ?? "Month"}" or "15 ${months()[0]?.short ?? "Month"} ${today().y}".`);
         return refresh();
       }
+    } else if (type === "idlist") {
+      const on = el.checked, rowId = el.value;
+      return mutateTracker(card.dataset.tid, (t) => {
+        const list = new Set(foundry.utils.getProperty(t, path) ?? []);
+        on ? list.add(rowId) : list.delete(rowId);
+        foundry.utils.setProperty(t, path, [...list]);
+      }, { notify: false });
     } else if (type === "segcount") {
       value = clamp(Math.round(num(el.value, 6)), 1, 24);
       const dropped = (this.trackerFor(el)?.segments ?? []).slice(value).filter((s) => s.state !== "empty" || s.label || s.date);
@@ -2311,6 +3330,13 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
         if (!ok) return this.render();
       }
     } else value = el.value;
+    if (/\.link\.tid$/.test(path)) {
+      const at = path.slice(0, -".link.tid".length);
+      return mutateTracker(card.dataset.tid, (t) => {
+        const g = foundry.utils.getProperty(t, at);
+        if (g) g.link = value ? { tid: value, cond: null, at: null, entry: null } : null;
+      }, { notify: false });
+    }
     await mutateTracker(card.dataset.tid, (t) => {
       if (type === "segcount") {
         while (t.segments.length < value) t.segments.push(TPL.segment());
@@ -2335,9 +3361,101 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     if (data?.type !== "Actor") return;
     const actor = await fromUuid(data.uuid);
     if (!actor) return;
+    const where = zone.dataset.drop;
+    const link = { uuid: actor.uuid, name: actor.prototypeToken?.name?.trim() || actor.name, img: actor.img, type: actor.type };
+    if (where.endsWith(".actor") && actor.type !== "loot") ui.notifications.info(`${actor.name} isn't a loot actor. Linked anyway.`);
     await mutateTracker(card.dataset.tid, (t) => {
-      t.npc = { uuid: actor.uuid, name: actor.prototypeToken?.name?.trim() || actor.name, img: actor.img };
-    });
+      if (where === "npc") t.npc = link;
+      else if (where === "giver") t.giver = link;
+      else if (/^rewards\.\d+\.actor$/.test(where)) foundry.utils.setProperty(t, where, link);
+    }, { notify: false });
+  }
+
+  static #onQTick(event, target) {
+    const t = this.trackerFor(target);
+    if (!t) return;
+    target.classList.add("pct-busy");
+    setTimeout(() => target.classList.remove("pct-busy"), 5000);
+    tickToGM(t.id, target.dataset.goal, target.dataset.to);
+  }
+
+  static async #onQNoteAdd(event, target) {
+    const t = this.trackerFor(target);
+    const area = target.closest(".pct-qnote-add")?.querySelector("textarea");
+    const text = area?.value.trim();
+    if (!t || !text) return;
+    if (this.isGM) {
+      if ((t.pnotes?.length ?? 0) >= NOTE_MAX) return ui.notifications.warn(`${t.name} has ${NOTE_MAX} notes, the most it holds. Delete some first.`);
+      await mutateTracker(t.id, (tr) => applyQuestNote(tr, "add", { by: game.user.id, name: "GM", text, isGM: true }) || undefined, { notify: false });
+    } else if (game.user.isGM) {
+      return;
+    } else if (sendToGM({ type: "qnote", tid: t.id, text })) {
+      area.value = "";
+    }
+  }
+
+  static async #onQNoteDel(event, target) {
+    const t = this.trackerFor(target);
+    if (!t) return;
+    const id = target.dataset.note;
+    if (this.isGM) await mutateTracker(t.id, (tr) => applyQuestNote(tr, "delete", { id, isGM: true }) || undefined, { notify: false });
+    else sendToGM({ type: "qnoteDel", tid: t.id, note: id });
+  }
+
+  static #onQSec(event, target) {
+    const key = `${target.closest("[data-tid]").dataset.tid}:${target.dataset.sec}`;
+    this.state.qedit.has(key) ? this.state.qedit.delete(key) : this.state.qedit.add(key);
+    this.render();
+  }
+
+  static #onQuestGo(event, target) {
+    this.state.quest = target.dataset.qid;
+    saveUI(this.state);
+    this.render();
+  }
+
+  /** An objective or step: click marks it done (or open again), right-click failed (or open again). */
+  static async #onQState(event, target) {
+    if (!this.isGM) return;
+    const right = event.button === 2 || event.type === "contextmenu";
+    await setGoalState(target.closest("[data-tid]").dataset.tid, { goal: target.dataset.goal }, right);
+  }
+
+  static async #onQFocus(event, target) {
+    const t = this.trackerFor(target);
+    if (!t || !this.isGM) return;
+    await mutateTracker(t.id, (tr) => {
+      tr.focus = !tr.focus;
+    }, { notify: false });
+  }
+
+  static #onQPin(event, target) {
+    const t = this.trackerFor(target);
+    if (t) togglePin(t.id);
+  }
+
+  static async #onQClear(event, target) {
+    const id = target.closest("[data-tid]").dataset.tid;
+    const path = target.dataset.path;
+    await mutateTracker(id, (t) => {
+      foundry.utils.setProperty(t, path, null);
+    }, { notify: false });
+  }
+
+  static #onQImg(event, target) {
+    const t = this.trackerFor(target);
+    if (!t) return;
+    const FP = foundry.applications.apps.FilePicker.implementation;
+    new FP({ type: "image", current: t.img || "", callback: (path) => mutateTracker(t.id, (tr) => {
+      tr.img = path;
+    }, { notify: false }) }).render(true);
+  }
+
+  static async #onOpenActor(event, target) {
+    const actor = await fromUuid(target.dataset.uuid);
+    if (!actor) return ui.notifications.warn("That actor no longer exists.");
+    if (!actor.testUserPermission(game.user, "LIMITED")) return ui.notifications.info(`You can't open ${actor.name} yet.`);
+    actor.sheet.render(true);
   }
 
   static #onTab(event, target) {
@@ -2414,14 +3532,38 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
   static async #onToggle(event, target) {
     const id = target.closest("[data-tid]").dataset.tid;
     const path = target.dataset.path;
-    await mutateTracker(id, (t) => {
+    const now = await mutateTracker(id, (t) => {
       foundry.utils.setProperty(t, path, !foundry.utils.getProperty(t, path));
+      return foundry.utils.getProperty(t, path) ? "on" : "off";
     }, { notify: false });
+    const lm = path.match(/^leads\.(\d+)\.revealed$/);
+    if (now === "on" && lm) {
+      const lead = Store.get(id)?.leads?.[Number(lm[1])];
+      const to = lead ? Store.data.trackers.find((x) => x.id === lead.to && x.kind === "quest" && !x.revealed) : null;
+      if (to && await foundry.applications.api.DialogV2.confirm({ window: { title: "Lead" }, content: `<p>This lead points to <strong>${esc(to.name)}</strong>, which players can't see yet. Reveal it too?</p>` })) {
+        await mutateTracker(to.id, (t) => {
+          t.revealed = true;
+        }, { notify: false });
+      }
+      return;
+    }
+    const m = path.match(/^rewards\.(\d+)\.revealed$/);
+    if (now !== "on" || !m) return;
+    const t = Store.get(id);
+    const reward = t?.rewards?.[Number(m[1])];
+    const actor = reward ? await lootToOpen(t, reward.id) : null;
+    if (!actor) return;
+    const ok = await foundry.applications.api.DialogV2.confirm({
+      window: { title: "Treasure" },
+      content: `<p>Let players open <strong>${esc(actor.name)}</strong>, so they can take what's inside? This gives everyone Observer on it.</p>`,
+    });
+    if (ok) await letPlayersOpen(actor.uuid);
   }
 
   static async #onAdd(event, target) {
     const id = target.closest("[data-tid]").dataset.tid;
     const list = target.dataset.list;
+    if (target.dataset.sec) this.state.qedit.add(`${id}:${target.dataset.sec}`);
     await mutateTracker(id, (t) => {
       const tpl = tplFor(t.kind, list);
       const arr = foundry.utils.getProperty(t, list);
@@ -2616,16 +3758,34 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
 /* ------------------------------------------------------------------ */
 
 Hooks.once("init", () => {
-  game.settings.register(MOD, "public", { scope: "world", config: false, type: Object, default: { trackers: [] }, onChange: () => refresh() });
+  game.settings.register(MOD, "public", { scope: "world", config: false, type: Object, default: { trackers: [] }, onChange: (v) => {
+    questNotices(v);
+    refresh();
+  } });
+  game.settings.register(MOD, "playerTicks", {
+    name: "Players can tick quest objectives",
+    hint: "Players mark revealed objectives and steps done, and can untick what a player ticked. The GM gets a card each time.",
+    scope: "world", config: true, type: Boolean, default: true, onChange: () => refresh(),
+  });
+  game.settings.register(MOD, "questPanel", {
+    name: "Show the quest panel",
+    hint: "A small panel with the party's focus and the quests you pinned, and their open objectives. Just for you.",
+    scope: "client", config: true, type: Boolean, default: true, onChange: () => renderPanel(),
+  });
+  game.settings.register(MOD, "questSound", {
+    name: "Quest notice sound",
+    hint: "A sound players hear with the notice when a quest is added or changes. Leave blank for none.",
+    scope: "world", config: true, type: String, default: "", filePicker: "audio",
+  });
   game.settings.register(MOD, "reminders", {
     name: "Date reminders",
-    hint: "Whisper the GM when the calendar reaches a date on a clock or a checklist entry.",
+    hint: "Whisper the GM when the calendar reaches a date on a clock, a checklist entry or a quest.",
     scope: "world", config: true, type: Boolean, default: true,
   });
   game.settings.register(MOD, "playerAccess", {
     name: "Players can open the trackers",
-    hint: "Players see only what you've revealed. Turn this off to keep the window GM-only.",
-    scope: "world", config: true, type: Boolean, default: true,
+    hint: "Players see only what you've revealed. Turn this off to keep the window and the quest panel GM-only.",
+    scope: "world", config: true, type: Boolean, default: true, onChange: () => refresh(),
   });
   game.keybindings.register(MOD, "open", {
     name: "Open Campaign Trackers",
@@ -2638,6 +3798,11 @@ Hooks.once("init", () => {
   });
 });
 
+Hooks.once("ready", () => {
+  game.socket.on(SOCKET, onSocket);
+  // Players start from what is already shared, so only later changes bring notices.
+  if (!game.user.isGM) lastQuests = questsOf(game.settings.get(MOD, "public"));
+});
 Hooks.once("ready", async () => {
   const api = {
     open: () => TrackersApp.open(),
@@ -2674,7 +3839,7 @@ Hooks.once("ready", async () => {
     if (isPrimaryGM() && !Store.broken) await publish(Store.data);
     // Chat drew its messages before the data was loaded, so Apply boxes and proposal controls are missing: draw them again.
     for (const m of game.messages.contents.slice(-100)) {
-      if (m.flags?.[SCOPE]?.proposal || m.flags?.[SCOPE]?.adhoc || parseTag(m.flags?.pf2e?.context?.options)) ui.chat?.updateMessage?.(m);
+      if (m.flags?.[SCOPE]?.proposal || m.flags?.[SCOPE]?.adhoc || m.flags?.[SCOPE]?.qprompt || parseTag(m.flags?.pf2e?.context?.options)) ui.chat?.updateMessage?.(m);
     }
     Hooks.callAll(`${MOD}.ready`, api);
     await syncPresets();
@@ -2682,7 +3847,13 @@ Hooks.once("ready", async () => {
   } else {
     Hooks.callAll(`${MOD}.ready`, api);
   }
+  renderPanel();
+  // A calendar module may set the calendar up just after ready; draw dates again once it has.
+  setTimeout(renderPanel, 1500);
+  window.addEventListener("resize", () => placePanel());
 });
+Hooks.on("calendaria.ready", () => refresh());
+Hooks.on("calendaria.calendarSwitched", () => refresh());
 
 /**
  * The data changed: load it, unless it's the revision this client just wrote. The same GM user can
