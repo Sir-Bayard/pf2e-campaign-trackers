@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Party quests: players make quests of their own (New quest on the Quests tab), and anyone in the party can edit them: the name, summary, status, category, giver, place, due date, objectives and steps, journal entries, leads and rewards. A GM needs to be logged in, since the GM's client records every change. Only the player who made a party quest, or the GM, can delete it. Ticks on a party quest need no GM card. The rest of the party gets a notice when one is made; edits show as Updated without a notice. A setting, "Players can make quests", turns this off.
+- Players' requests (ticks, notes, party quests) are checked against the user Foundry says sent them, so a player can't act as another.
 - The quest panel has its own close button. It hides the panel for you until you choose Show the quest panel on the Quests tab (or turn the setting back on).
 - For other modules: `api.openQuest(id)` opens the window on a quest, and `api.quests()` lists the quests the user can see.
 

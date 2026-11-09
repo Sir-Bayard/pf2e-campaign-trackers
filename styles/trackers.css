@@ -324,3 +324,8 @@
 
 /* The quest panel hidden: the way back, on the Quests tab */
 .pct-app .pct-panel-off { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; }
+
+/* Party quests */
+.pct-app .pct-partyline { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; }
+.pct-qnew-dialog .pct-dialog-form { display: flex; flex-direction: column; gap: 8px; }
+.pct-qnew-dialog .pct-dialog-form label { display: flex; flex-direction: column; gap: 3px; }
