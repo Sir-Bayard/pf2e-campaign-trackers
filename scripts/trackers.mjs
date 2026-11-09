@@ -3688,9 +3688,18 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     const was = this.#beforeMin;
     this.#restoring = true;
     try {
-      await super.maximize();
-      // Foundry sets the size while its max-height transition may still be running, which clamps the height to the
-      // header's; let it end first.
+      const pending = super.maximize();
+      // Foundry's restore animation can stall at the header's height (seen on 14.370, core windows too), and it sets
+      // the size while that runs, so the window came back as a strip. Finish the animation at once; then let anything
+      // left end before putting the size back.
+      for (const a of this.element.getAnimations?.() ?? []) {
+        try {
+          a.finish();
+        } catch {
+          /* nothing to finish */
+        }
+      }
+      await pending;
       await settle(this.element);
       if (was) this.setPosition(was);
     } finally {
