@@ -3416,7 +3416,9 @@ function loadSize() {
   return out;
 }
 let sizeTimer = null;
-function saveSize(pos) {
+function saveSize(position) {
+  // Copy now: Foundry hands over its own live position object, which may change before the save runs.
+  const pos = { left: position.left, top: position.top, width: position.width, height: position.height };
   clearTimeout(sizeTimer);
   sizeTimer = setTimeout(() => {
     try {
@@ -3429,10 +3431,10 @@ function saveSize(pos) {
 
 /** Wait for an element's own transitions to end; a hidden tab pauses them, so after a second they're finished by hand. */
 async function settle(el) {
-  const anims = el.getAnimations?.() ?? [];
+  const anims = el?.getAnimations?.() ?? [];
   if (!anims.length) return;
   await Promise.race([Promise.all(anims.map((a) => a.finished.catch(() => null))), new Promise((r) => setTimeout(r, 1200))]);
-  for (const a of el.getAnimations?.() ?? []) {
+  for (const a of el?.getAnimations?.() ?? []) {
     try {
       a.finish();
     } catch {
@@ -3679,12 +3681,19 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
    * the interface is scaled; keep the real size from before and put it back. */
   #beforeMin = null;
   #restoring = false;
+  #restore = null;
   async minimize() {
     if (!this.minimized && this.rendered) this.#beforeMin = { width: this.position.width, height: this.position.height };
     return super.minimize();
   }
-  async maximize() {
+  maximize() {
+    // A restore already under way is the one to wait for.
+    if (this.#restore) return this.#restore;
     if (!this.minimized) return super.maximize();
+    this.#restore = this.#restoreWhole().finally(() => (this.#restore = null));
+    return this.#restore;
+  }
+  async #restoreWhole() {
     const was = this.#beforeMin;
     this.#restoring = true;
     try {
@@ -3701,7 +3710,8 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
       }
       await pending;
       await settle(this.element);
-      if (was) this.setPosition(was);
+      // Not if it was closed or minimized again meanwhile.
+      if (was && this.rendered && !this.minimized) this.setPosition(was);
     } finally {
       this.#restoring = false;
     }
@@ -3718,7 +3728,12 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
 
   /** Draw the window, restoring it first if it's minimized (a draw that ends while it's collapsed sizes it wrong). */
   async show() {
-    if (this.minimized) await this.maximize();
+    if (this.minimized || this.#restore) {
+      const open = this.rendered;
+      await this.maximize();
+      // Closed while it was being restored: don't open it again.
+      if (open && !this.rendered) return this;
+    }
     return this.render({ force: true });
   }
 
