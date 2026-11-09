@@ -542,7 +542,7 @@ function unseen(q) {
 function markSeen(q) {
   const map = seenMap();
   const h = questHash(q);
-  if (map[q.id] === h) return;
+  if (map[q.id] === h) return false;
   map[q.id] = h;
   changedSoon();
   try {
@@ -550,6 +550,7 @@ function markSeen(q) {
   } catch {
     /* no storage: markers come back next time */
   }
+  return true;
 }
 
 /** The quests as players last saw them in the shared copy, to say what changed when it changes. */
@@ -3143,7 +3144,10 @@ const TYPING = "textarea, select, input:not([type=checkbox]):not([type=radio])";
 let changedTimer = null;
 function changedSoon() {
   clearTimeout(changedTimer);
-  changedTimer = setTimeout(() => Hooks.callAll(`${MOD}.changed`), 150);
+  changedTimer = setTimeout(() => {
+    repaintQuestLinks();
+    Hooks.callAll(`${MOD}.changed`);
+  }, 150);
 }
 
 function refresh() {
@@ -3344,28 +3348,52 @@ function onPanelDrag(ev) {
   window.addEventListener("pointerup", up);
 }
 
-/** Open the window on a quest, with one of its sections open for editing if asked. */
+/** Can this user see quests at all? Players need "Players can open the trackers". */
+const questsOpen = () => game.user.isGM || !!game.settings.get(MOD, "playerAccess");
+
 /** A quest as the players see it, read-only, wrapped in this module's styles; null when players can't see it. */
 function questReadOnly(id) {
-  const q = visibleTrackers({ asPlayer: true }).find((t) => t.id === id && t.kind === "quest");
+  if (!questsOpen()) return null;
+  // L1: project only this quest (projecting every tracker per call made a list of quests slow for the GM).
+  let q;
+  if (game.user.isGM) {
+    const t = Store.get(id);
+    q = t?.kind === "quest" ? project(t, { all: Store.data.trackers }) : null;
+  } else q = visibleTrackers().find((t) => t.id === id && t.kind === "quest");
   if (!q) return null;
   const html = `${q.desc ? `<p class="pct-desc">${para(q.desc)}</p>` : ""}${questHead(q, { gm: false })}${questBody(q, { gm: false, readOnly: true })}`;
   return `<div class="pct-app pct-embed"><div class="pct">${html.replaceAll('data-action="', 'data-pct-action="')}</div></div>`;
 }
 
-/** @Quest[id]{label} in journal text: a link that opens the quest. */
-const QUEST_LINK = /@Quest\[([A-Za-z0-9_-]{1,64})\](?:\{([^}]{1,200})\})?/g;
+/** @Quest[id]{label} in journal text: a link that opens the quest. Ids are anything but "]" and spaces (preset ids
+ * can hold dots). */
+const QUEST_LINK = /@Quest\[([^\]\s]{1,100})\](?:\{([^}]{1,500})\})?/g;
 function enrichQuestLink(match) {
   const [, id, label] = match;
-  const q = visibleTrackers().find((t) => t.id === id && t.kind === "quest");
-  const known = !!q && (game.user.isGM || q.revealed !== false);
   const a = document.createElement("a");
-  a.className = `pct-quest-link${known ? "" : " pct-quest-unknown"}`;
+  a.className = "pct-quest-link";
   a.dataset.questId = id;
-  if (!known) a.dataset.tooltip = game.user.isGM ? "No quest with this id" : "Not revealed yet";
-  a.innerHTML = `<i class="fa-solid fa-scroll"></i>`;
-  a.append(document.createTextNode(label || q?.name || "Unknown quest"));
+  if (label) a.dataset.label = label;
+  paintQuestLink(a);
   return a;
+}
+/** Draw a quest link as this user should see it now. A player who can't see the quest sees neither its name nor the
+ * link's label (M1: a label could name a hidden quest), only "Unknown quest". */
+function paintQuestLink(a) {
+  const q = visibleTrackers().find((t) => t.id === a.dataset.questId && t.kind === "quest");
+  const open = questsOpen();
+  const known = !!q && open;
+  a.classList.toggle("pct-quest-unknown", !known);
+  if (known) delete a.dataset.tooltip;
+  else a.dataset.tooltip = game.user.isGM ? "No quest with this id" : open ? "Not revealed yet" : "The GM hasn't opened the trackers to players";
+  const text = known ? a.dataset.label || q.name : game.user.isGM && a.dataset.label ? a.dataset.label : "Unknown quest";
+  const icon = document.createElement("i");
+  icon.className = "fa-solid fa-scroll";
+  a.replaceChildren(icon, document.createTextNode(text));
+}
+/** L3: links already on screen follow reveals, renames and the trackers loading after them. */
+function repaintQuestLinks() {
+  for (const a of document.querySelectorAll("a.pct-quest-link")) paintQuestLink(a);
 }
 /** A quest link was clicked: another module may show it (return false from the hook), else the window opens on it. */
 function onQuestLink(ev) {
@@ -3374,11 +3402,13 @@ function onQuestLink(ev) {
   ev.preventDefault();
   ev.stopPropagation();
   const id = a.dataset.questId;
+  if (!questsOpen()) return ui.notifications.info("The GM hasn't opened the trackers to players.");
   if (!visibleTrackers().some((t) => t.id === id && t.kind === "quest")) return ui.notifications.info("That quest isn't open to you yet.");
   if (Hooks.call(`${MOD}.questLink`, id, a) === false) return;
   openQuest(id);
 }
 
+/** Open the window on a quest, with one of its sections open for editing if asked. */
 function openQuest(id, sec = null) {
   if (!game.user.isGM && !game.settings.get(MOD, "playerAccess")) return;
   const app = [...openApps][0] ?? new TrackersApp();
@@ -3696,7 +3726,7 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
       const a = ev.target.closest?.(".pct-qlist a[data-qid]");
       if (!a) return;
       const q = visibleTrackers().find((t) => t.id === a.dataset.qid);
-      if (q) ev.dataTransfer.setData("text/plain", `@Quest[${q.id}]{${String(q.name).replace(/[{}]/g, "")}}`);
+      if (q) ev.dataTransfer.setData("text/plain", `@Quest[${q.id}]`);
     });
     this.element.addEventListener("change", (ev) => this.#onChange(ev));
     // A redraw put off while a field had focus happens once focus leaves the form (refresh checks again).
@@ -4384,16 +4414,21 @@ Hooks.once("ready", () => {
   if (!game.user.isGM) lastQuests = questsOf(game.settings.get(MOD, "public"));
 });
 Hooks.once("ready", async () => {
+  // Links drawn before the trackers loaded (chat, an open journal) pick up their names.
+  setTimeout(repaintQuestLinks, 2000);
   const api = {
     open: (tab) => TrackersApp.open(tab),
     /** Open the window on a quest this user can see (another module's link to it, say). */
     openQuest: (id) => openQuest(id),
     /** The quests this user can see (the GM: all of them), with what a list needs: id, name, status, its label,
-     * category, objectives done and in all (not counting optional ones), whether players can see it (GM), whether
-     * it's a party quest or the party's focus, and this user's New/Updated mark ("new", "updated" or ""). */
-    quests: () => visibleTrackers().filter((t) => t.kind === "quest").map((t) => {
+     * category, objectives done and in all (not counting optional ones; shownDone and shownTotal count only what
+     * players see), whether players can see it (GM), whether it's a party quest or the party's focus, and this
+     * user's New/Updated mark ("new", "updated" or ""). Empty for players while they can't open the trackers. */
+    quests: () => (questsOpen() ? visibleTrackers() : []).filter((t) => t.kind === "quest").map((t) => {
       const main = (t.objectives ?? []).filter((o) => !o.optional);
+      const shown = game.user.isGM ? (project(t, { all: Store.data.trackers })?.objectives ?? []).filter((o) => !o.optional) : main;
       return {
+        shownDone: shown.filter((o) => o.state === "done").length, shownTotal: shown.length,
         id: t.id, name: t.name, status: t.status, statusLabel: QSTATUS_LABEL[t.status] ?? "Active", category: t.category ?? "",
         done: main.filter((o) => o.state === "done").length, total: main.length,
         revealed: game.user.isGM ? !!t.revealed : true, party: !!t.party, focus: !!t.focus,
@@ -4408,7 +4443,7 @@ Hooks.once("ready", async () => {
     markQuestSeen: (id) => {
       if (game.user.isGM) return;
       const q = visibleTrackers().find((t) => t.id === id && t.kind === "quest");
-      if (q) markSeen(q);
+      if (q && markSeen(q)) refresh();
     },
     registerPreset,
     syncPresets,

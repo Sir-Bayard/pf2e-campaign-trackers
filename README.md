@@ -246,6 +246,10 @@ A party quest is yours to edit too, and you can add hidden parts and GM notes th
 
 <img src="docs/images/quest-panel.png" alt="The quest panel" width="300">
 
+**Quest links.** Write `@Quest[id]` in any journal page (or `@Quest[id]{a label}` for other words), and it shows as a link that opens the quest. Drag a quest from the Quests list into a page's editor to make one; a quest's id is also in `api.quests()`. A player sees a link to a quest they can't open yet as a faded link.
+
+**In Bayard's Campaign Journal.** With [Bayard's Campaign Journal](https://github.com/Sir-Bayard/bayards-campaign-journal) installed, its Quests tab lists the quests and shows each one as the players see it, and quest links clicked there open the quest on that tab.
+
 ## Reminders
 
 When the in-game date reaches or passes a date on a clock segment, a checklist entry or a quest, you get one whispered reminder listing everything due, even after a time skip. Nothing changes by itself: you fill the segment or tick the entry. On a clock set to "Fills in order", each date fills the next empty segment. Turn reminders off in the module settings.
@@ -279,7 +283,12 @@ api.open("reputation")   // open it on a tab: "quest", "reputation", "pressure",
                          // "research", "chase", "infiltration", "clock", "checklist", a tab's label ("Victory Points"),
                          // or a tracker's id (its tab; for a quest, that quest)
 api.openQuest("quest-id")   // open the window on a quest the user can see
-api.quests()   // the quests the user can see: id, name, status, category
+api.quests()   // the quests the user can see (the GM: all): id, name, status, statusLabel, category,
+               // done and total objectives, revealed, party, focus, and the user's mark ("new", "updated" or "")
+api.questHTML("quest-id")   // the quest as players see it, read-only, as HTML (null if players can't see it)
+api.markQuestSeen("quest-id")   // clear the user's New/Updated mark on it
+// Hooks: "pf2e-campaign-trackers.changed" when trackers or marks change; "pf2e-campaign-trackers.questLink"
+// (id, link) when a quest link is clicked: return false to show the quest yourself.
 ```
 
 ## Changes
