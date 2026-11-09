@@ -253,6 +253,17 @@
 .pct-app .pct-qleads li > .pct-gm, .pct-app .pct-qrewards li > .pct-gm { flex-basis: 100%; padding-left: 22px; }
 .pct-app .pct-qgoals .pct-gm { padding-left: 24px; }
 .pct-app .pct .pct-qsteps > li > .pct-gm { flex-basis: 100%; padding-left: 44px; }
+/* GM notes on a quest: a tinted box tagged GM. */
+.pct-app .pct .pct-gm.pct-gmbox { display: flex; align-items: baseline; gap: 6px; opacity: 1; margin: 3px 0 4px; padding: 3px 8px; border-left: 3px solid #8a7be0; border-radius: 3px; background: rgba(124, 104, 230, 0.14); }
+.pct-app .pct .pct-qgoals .pct-gm.pct-gmbox { margin-left: 24px; padding-left: 8px; }
+.pct-app .pct .pct-qsteps > li > .pct-gm.pct-gmbox { margin-left: 44px; padding-left: 8px; }
+.pct-app .pct .pct-qleads li > .pct-gm.pct-gmbox, .pct-app .pct .pct-qrewards li > .pct-gm.pct-gmbox { flex-basis: calc(100% - 22px); margin-left: 22px; padding-left: 8px; }
+.pct-app .pct .pct-gmbox > span:last-child { flex: 1 1 auto; min-width: 0; }
+.pct-app .pct .pct-gmtag { flex: none; display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-weight: 700; letter-spacing: 0.05em; color: #9d91f0; }
+.pct-app .pct .pct-entry-by { margin-right: 2px; }
+.pct-app .pct .pct-qnotes .pct-btn[data-action="pctQNoteJournal"] { border: none; opacity: 0.5; padding: 0 3px; }
+.pct-app .pct .pct-qnotes .pct-btn[data-action="pctQNoteJournal"]:hover { opacity: 1; }
+.pct-app .pct .pct-qnote-kept { color: var(--pct-accent); padding: 0 3px; }
 .pct-app .pct .pct-qlink { color: var(--pct-accent); white-space: nowrap; }
 .pct-app .pct-qrewards .pct-npc { cursor: pointer; }
 .pct-app .pct .pct-qlist a.pct-qli-completed { color: var(--pct-ok); }

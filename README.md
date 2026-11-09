@@ -201,7 +201,7 @@ A quest log for the party: what they've taken on, what's next, what they've lear
 - **Journal** entries, each with a date, for what happened along the way.
 - **Leads**: a line of text that can point to another quest.
 - **Rewards**: text, and a loot actor if it's treasure.
-- Notes only you see, on the quest and on each objective, step, lead and reward.
+- Notes only you see, on the quest and on each objective, step, lead and reward. They show in a purple box marked GM, so they never read as something players see.
 
 The pencil on a quest edits all of it. Each section also has its own pencil and +, so you can add an objective or a GM note without opening the rest.
 
@@ -221,7 +221,7 @@ The pencil on a quest edits all of it. Each section also has its own pencil and 
 
 - Read what you've revealed, and nothing else: no GM notes, no hidden objectives, steps or leads. A lead names the quest it points to only once that quest is revealed.
 - Tick a revealed objective or step done. You get a card each time, with anything you prepared to reveal. They can untick what a player ticked, but not what you marked. Turn this off with the setting "Players can tick quest objectives".
-- Add notes to a quest, signed with their character's name. Everyone sees them. Players delete their own; you can delete any.
+- Add notes to a quest, signed with their character's name. Everyone sees them. Players delete their own; you can delete any. The book on a note adds it to the quest's journal, dated today, revealed and signed with the player's name, so a good find becomes part of the record. A gold book means it's already there.
 - Start party quests of their own (below).
 - Players' ticks, notes and party quests go through a GM's client, so a GM needs to be logged in for them.
 

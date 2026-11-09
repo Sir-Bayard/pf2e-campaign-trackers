@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.0
+
+- GM notes on a quest (on the quest itself and on each objective, step, lead and reward) show in a purple box marked GM, so they never read as something players see.
+- The GM can add a party note to the quest's journal with the book beside it: the entry is dated today, revealed, and signed with the player's name. A gold book shows a note that's already there.
+
 ## 2.1.0
 
 - Party quests: players make quests of their own (New quest on the Quests tab), and anyone in the party can edit them: the name, summary, status, category, giver, place, due date, objectives and steps, journal entries, leads and rewards. A GM needs to be logged in, since the GM's client records every change. Only the player who made a party quest, or the GM, can delete it, and each player can make up to 20. Ticks and counts on a party quest need no GM card. The rest of the party gets a notice when one is made; edits show as Updated without a notice. A setting, "Players can make quests", turns this off.

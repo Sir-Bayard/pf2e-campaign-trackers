@@ -1151,7 +1151,7 @@ function project(t, { force = false, all = null } = {}) {
         giver: t.giver ? { name: t.giver.name, img: t.giver.img } : t.giverText ? { name: t.giverText, img: "" } : null,
         location: t.location, deadline: t.showDue !== false ? t.deadline : null, dueHidden: t.party && t.showDue === false ? true : undefined,
         objectives: shown(t.objectives).map((o) => ({ ...goal(o), mode: o.mode, steps: shown(o.steps).map(goal) })),
-        entries: shown(t.entries).map((e) => ({ id: e.id, date: e.date, text: e.text })),
+        entries: shown(t.entries).map((e) => ({ id: e.id, date: e.date, text: e.text, by: e.by || undefined })),
         leads: shown(t.leads).map((l) => {
           const q = linked(l.to);
           return { id: l.id, text: l.text, to: q ? { id: q.id, name: q.name } : null };
@@ -2490,6 +2490,9 @@ function questHead(q, { gm }) {
   return `<div class="pct-qhead">${q.img ? `<img class="pct-qimg" src="${esc(q.img)}" alt="">` : ""}<div class="pct-line">${facts}</div></div>`;
 }
 
+/** Text only the GM sees on a quest, in a box marked as such. */
+const gmBox = (text) => `<div class="pct-gm pct-gmbox"><span class="pct-gmtag" data-tooltip="Only you see this"><i class="fa-solid fa-eye-slash"></i>GM</span><span>${para(text)}</span></div>`;
+
 /** An objective or step's count and its state box. The GM's box is a button; left click done, right click failed. */
 function goalLine(g, path, { gm, steps = null, mode = "all", tick = false, party = false, counts = false }) {
   const can = tick && (g.state === "open" || (g.state === "done" && g.doneBy === "player"));
@@ -2522,20 +2525,20 @@ function questBody(q, { gm, party = false, all = [], open = new Set() }) {
   const own = partyTicks(q);
   const objectives = q.objectives.map((o, i) => {
     const p = `objectives.${i}`;
-    const steps = o.steps.map((st, j) => `<li class="pct-q-${esc(st.state)}">${gm ? eye(`${p}.steps.${j}`, st.revealed) : ""}${goalLine(st, `${p}.steps.${j}`, { gm, tick, party: own, counts: party })}${gm && st.gm ? `<div class="pct-gm">${para(st.gm)}</div>` : ""}</li>`).join("");
+    const steps = o.steps.map((st, j) => `<li class="pct-q-${esc(st.state)}">${gm ? eye(`${p}.steps.${j}`, st.revealed) : ""}${goalLine(st, `${p}.steps.${j}`, { gm, tick, party: own, counts: party })}${gm && st.gm ? gmBox(st.gm) : ""}</li>`).join("");
     return `<li class="pct-q-${esc(o.state)}"><div class="pct-qrow">${gm ? eye(p, o.revealed) : ""}${goalLine(o, p, { gm, steps: o.steps, mode: o.mode, tick, party: own, counts: party })}</div>
-        ${gm && o.gm ? `<div class="pct-gm">${para(o.gm)}</div>` : ""}
+        ${gm && o.gm ? gmBox(o.gm) : ""}
         ${steps ? `<ul class="pct-qsteps"><li class="pct-k">${o.mode === "any" ? "Any one of these" : "All of these"}</li>${steps}</ul>` : ""}</li>`;
   }).join("");
-  const entries = [...q.entries].map((e, i) => ({ e, i })).reverse().map(({ e, i }) => `<li>${gm ? eye(`entries.${i}`, e.revealed) : ""}${e.date ? `<span class="pct-date-chip">${esc(fmtDate(e.date))}</span>` : ""}<span>${para(e.text)}</span></li>`).join("");
+  const entries = [...q.entries].map((e, i) => ({ e, i })).reverse().map(({ e, i }) => `<li>${gm ? eye(`entries.${i}`, e.revealed) : ""}${e.date ? `<span class="pct-date-chip">${esc(fmtDate(e.date))}</span>` : ""}<span>${e.by ? `<strong class="pct-entry-by">${esc(e.by)}</strong> ` : ""}${para(e.text)}</span></li>`).join("");
   const leads = q.leads.map((l, i) => {
     const to = gm ? all.find((x) => x.id === l.to && x.kind === "quest") : l.to;
     const go = to ? `<a class="pct-qlink" data-action="pctQuestGo" data-qid="${esc(to.id)}"><i class="fa-solid fa-arrow-right"></i> ${esc(to.name)}${gm && !to.revealed ? " (hidden)" : ""}</a>` : "";
-    return `<li>${gm ? eye(`leads.${i}`, l.revealed) : ""}<i class="fa-solid fa-signs-post"></i><span>${para(l.text)}</span>${go}${gm && l.gm ? `<div class="pct-gm">${para(l.gm)}</div>` : ""}</li>`;
+    return `<li>${gm ? eye(`leads.${i}`, l.revealed) : ""}<i class="fa-solid fa-signs-post"></i><span>${para(l.text)}</span>${go}${gm && l.gm ? gmBox(l.gm) : ""}</li>`;
   }).join("");
   const rewards = q.rewards.map((r, i) => {
     const actor = r.actor ? `<a class="pct-npc" data-action="pctOpenActor" data-uuid="${esc(r.actor.uuid)}" data-tooltip="Open the sheet">${r.actor.img ? `<img src="${esc(r.actor.img)}" alt="">` : ""}<strong>${esc(r.actor.name)}</strong></a>` : "";
-    return `<li>${gm ? eye(`rewards.${i}`, r.revealed) : ""}<i class="fa-solid fa-gem"></i><span>${para(r.text)}</span>${actor}${gm && r.gm ? `<div class="pct-gm">${para(r.gm)}</div>` : ""}</li>`;
+    return `<li>${gm ? eye(`rewards.${i}`, r.revealed) : ""}<i class="fa-solid fa-gem"></i><span>${para(r.text)}</span>${actor}${gm && r.gm ? gmBox(r.gm) : ""}</li>`;
   }).join("");
   const notes = partyNotes(q, { gm });
   if (!gm && !party) {
@@ -2564,7 +2567,11 @@ function questBody(q, { gm, party = false, all = [], open = new Set() }) {
 /** The party's shared notes on a quest: anyone adds one, signed; its author or the GM deletes it. */
 function partyNotes(q, { gm }) {
   const preview = !gm && game.user.isGM;
-  const rows = (q.pnotes ?? []).map((n) => `<li><strong>${esc(n.name)}</strong><span>${para(n.text)}</span>${!preview && (gm || n.by === game.user.id) ? A("pctQNoteDel", "fa-solid fa-xmark", { tip: "Delete this note", data: { note: n.id } }) : ""}</li>`).join("");
+  const inJournal = (n) => (q.entries ?? []).some((e) => e.from === n.id);
+  const toJournal = (n) => (!gm ? "" : inJournal(n)
+    ? `<i class="fa-solid fa-book pct-qnote-kept" data-tooltip="In the journal"></i>`
+    : A("pctQNoteJournal", "fa-solid fa-book", { tip: "Add to the journal: dated today, revealed, signed with this name", data: { note: n.id } }));
+  const rows = (q.pnotes ?? []).map((n) => `<li><strong>${esc(n.name)}</strong><span>${para(n.text)}</span>${toJournal(n)}${!preview && (gm || n.by === game.user.id) ? A("pctQNoteDel", "fa-solid fa-xmark", { tip: "Delete this note", data: { note: n.id } }) : ""}</li>`).join("");
   return `<div class="pct-qnotes"><div class="pct-sub">Party notes</div>${rows ? `<ul>${rows}</ul>` : `<p class="pct-hint">No notes yet.${gm ? "" : " Anything the party wants to remember goes here."}</p>`}
       ${preview ? "" : `<div class="pct-qnote-add"><textarea rows="2" placeholder="${gm ? "A note, signed GM" : "Add a note for the party"}" maxlength="${NOTE_LEN}"></textarea>${A("pctQNoteAdd", "fa-solid fa-plus", { label: "Add note" })}</div>`}</div>`;
 }
@@ -2600,7 +2607,7 @@ function questGM(t, open) {
   return `${partyLine(t, true)}<div class="pct-qsec" data-sec="details"><div class="pct-sub">Details ${A("pctQSec", detailsOpen ? "fa-solid fa-check" : "fa-solid fa-pen", { tip: detailsOpen ? "Done" : "Edit the name, summary, status, category, giver, location, due date and picture", data: { sec: "details" }, cls: `pct-qsec-btn ${detailsOpen ? "pct-on" : ""}` })}</div>${details}</div>
     ${questBody(t, { gm: true, all: Store.data.trackers, open })}
     <div class="pct-qsec" data-sec="notes"><div class="pct-sub">GM notes ${A("pctQSec", notesOpen ? "fa-solid fa-check" : "fa-solid fa-pen", { tip: notesOpen ? "Done" : "Edit GM notes", data: { sec: "notes" }, cls: `pct-qsec-btn ${notesOpen ? "pct-on" : ""}` })}</div>
-      ${notesOpen ? `<div class="pct-qsec-edit">${QEDIT.notes(t)}</div>` : t.notes ? `<div class="pct-gm">${para(t.notes)}</div>` : `<p class="pct-hint">None.</p>`}</div>`;
+      ${notesOpen ? `<div class="pct-qsec-edit">${QEDIT.notes(t)}</div>` : t.notes ? gmBox(t.notes) : `<p class="pct-hint">None.</p>`}</div>`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -3433,6 +3440,7 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
       pctQSec: TrackersApp.#onQSec,
       pctQTick: TrackersApp.#onQTick,
       pctQNoteAdd: TrackersApp.#onQNoteAdd,
+      pctQNoteJournal: TrackersApp.#onQNoteJournal,
       pctQNoteDel: TrackersApp.#onQNoteDel,
       pctQState: { handler: TrackersApp.#onQState, buttons: [0, 2] },
       pctQFocus: TrackersApp.#onQFocus,
@@ -3705,6 +3713,18 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     } else if (sendToGM({ type: "qnote", tid: t.id, text })) {
       area.value = "";
     }
+  }
+
+  static async #onQNoteJournal(event, target) {
+    const t = this.trackerFor(target);
+    if (!this.isGM || !t) return;
+    const id = target.dataset.note;
+    await mutateTracker(t.id, (tr) => {
+      const n = (tr.pnotes ?? []).find((x) => x.id === id);
+      if (!n || tr.entries.some((e) => e.from === id)) return undefined;
+      tr.entries.push({ ...TPL.qentry(), date: today(), text: n.text, by: n.name, from: id, revealed: true });
+      return true;
+    }, { notify: false });
   }
 
   static async #onQNoteDel(event, target) {
