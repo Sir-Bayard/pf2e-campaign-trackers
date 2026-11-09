@@ -248,6 +248,10 @@ A party quest is yours to edit too, and you can add hidden parts and GM notes th
 
 **Quest links.** Write `@Quest[id]` in any journal page (or `@Quest[id]{a label}` for other words), and it shows as a link that opens the quest. Drag a quest from the Quests list into a page's editor to make one; a quest's id is also in `api.quests()`. A player sees a link to a quest they can't open yet as a faded link.
 
+**Reveal links.** A button for your prep notes that reveals parts of a quest when the moment comes, so you don't have to find the right eyes at the table. In your view of a quest, each objective, step, journal entry, lead and reward shows a link icon when you point at it: drag it into a journal page, or click it to copy the link. For one button that reveals several parts, click the link icon in the quest's header, tick the parts, and drag **Drag or copy** into the page (with nothing ticked, the button reveals the quest itself). In the page it reads like `@QuestReveal[quest-id|part-id,part-id]{The porch door}`; the words in braces are the button's label.
+
+Clicking the button lists what it will reveal, all ticked: the quest if players can't see it yet, each hidden part, the objective a step sits under, the quest a lead points to, and loot players can't open yet. Untick anything to keep it hidden, then **Reveal**. Shift-click reveals everything on that list at once, as Shift skips the dialog when you roll. Either way it's one change, so players get one notice. Pointing at the button lists what it covers, with a tick on what players already see; it fades with a check once they see it all, and shows a dashed red border when something it names was deleted. Players see only the label, as plain text, with no hint of what's behind it; a link made by dragging is labeled with the part's text (or the quest's name), so change the label in a page players can read. A reveal link in chat, or in a page a player changed last, always shows the list, even with Shift.
+
 **In Bayard's Campaign Journal.** With [Bayard's Campaign Journal](https://github.com/Sir-Bayard/bayards-campaign-journal) installed, its Quests tab lists the quests and shows each one as the players see it, and quest links clicked there open the quest on that tab.
 
 ## Reminders
@@ -287,6 +291,8 @@ api.quests()   // the quests the user can see (the GM: all): id, name, status, s
                // done and total objectives, revealed, party, focus, and the user's mark ("new", "updated" or "")
 api.questHTML("quest-id")   // the quest as players see it, read-only, as HTML (null if players can't see it)
 api.markQuestSeen("quest-id")   // clear the user's New/Updated mark on it
+api.revealLink("quest-id", ["part-id"], "The porch door")   // a reveal link's text (GM)
+api.revealParts("quest-id", ["part-id"], { ask: false })   // reveal as a reveal link does; ask: true shows the list (GM)
 // Hooks: "pf2e-campaign-trackers.changed" when trackers or marks change; "pf2e-campaign-trackers.questLink"
 // (id, link) when a quest link is clicked: return false to show the quest yourself.
 ```
