@@ -50,9 +50,14 @@ const signed = (n) => (n > 0 ? `+${n}` : `${n}`);
  * live tabs acts. */
 const CLIENT_ID = globalThis.foundry?.utils?.randomID?.(16) ?? Math.random().toString(36).slice(2, 18);
 const gmTabs = new Map();
+/* A hidden tab's timers can slow to about once a minute, so a tab is forgotten only after 150 s without a word, and
+ * each tab answers an announcement from a tab with a higher id (socket messages aren't slowed), so the lead stays
+ * known while it lives. */
+const TAB_TTL = 150000;
+let lastAnswer = 0;
 function leadTab() {
   const now = Date.now();
-  for (const [id, seen] of gmTabs) if (now - seen > 45000) gmTabs.delete(id);
+  for (const [id, seen] of gmTabs) if (now - seen > TAB_TTL) gmTabs.delete(id);
   return [...gmTabs.keys()].every((id) => CLIENT_ID < id);
 }
 const isPrimaryGM = () => game.user.isGM && game.users.activeGM?.id === game.user.id && leadTab();
@@ -338,7 +343,6 @@ function applyQuestTick(t, goalId, to, userId) {
 }
 
 const NOTE_MAX = 60, NOTE_LEN = 1000;
-/** Add a party note (anyone) or delete one (its author, or the GM). Changes `t` in place; true when it changed. */
 /* Party quests. A player's edit runs on their copy of the quest; what changed (fields set, rows added, removed,
  * edited or reordered, matched by id) goes to the GM's client, which applies only the parts players may change.
  * Rows the GM has hidden never reach players, so they're never touched. */
@@ -351,6 +355,10 @@ const PARTY_ROWS = {
   rewards: { tpl: "reward", fields: ["text"] },
 };
 const PARTY_MAX = { objectives: 40, steps: 20, entries: 100, leads: 30, rewards: 30 };
+/** The most party quests one player may have made, and how long (as JSON) a player's edit may make a quest. */
+const PARTY_PER_PLAYER = 20, PARTY_QUEST_SIZE = 64000;
+/** Every row id in a quest: objectives, their steps, journal entries, leads and rewards. */
+const questIds = (t) => new Set([...Object.keys(PARTY_ROWS).flatMap((l) => (t[l] ?? []).map((r) => r.id)), ...(t.objectives ?? []).flatMap((o) => (o.steps ?? []).map((x) => x.id))]);
 const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 
 /** What changed between a player's copy of a party quest before and after an edit, or null for nothing. */
@@ -419,40 +427,51 @@ function applyPartyChanges(t, ch, makeId = uid) {
       continue;
     }
     if (k === "giverText" && t.giver) continue;
+    // A due date the GM keeps secret isn't the party's to change.
+    if (k === "deadline" && t.showDue === false) continue;
     t[k] = partyValue(k, v);
   }
-  for (const [list, lc] of Object.entries(ch.lists ?? {})) {
-    if (PARTY_ROWS[list]) t[list] = applyRows(t[list] ?? [], lc, PARTY_ROWS[list], PARTY_MAX[list], makeId);
+  const taken = questIds(t);
+  for (const [list, lc] of Object.entries(ch.lists && typeof ch.lists === "object" ? ch.lists : {})) {
+    if (Object.hasOwn(PARTY_ROWS, list)) t[list] = applyRows(t[list] ?? [], lc, PARTY_ROWS[list], PARTY_MAX[list], makeId, taken);
   }
   return true;
 }
-function applyRows(rows, lc, spec, max, makeId) {
+function applyRows(rows, lc, spec, max, makeId, taken = new Set()) {
   if (!lc || typeof lc !== "object") return rows;
   const removed = new Set(Array.isArray(lc.remove) ? lc.remove : []);
   let out = rows.filter((r) => !(r.revealed && removed.has(r.id)));
   for (const [id, fields] of Object.entries(lc.edit && typeof lc.edit === "object" ? lc.edit : {})) {
     const r = out.find((x) => x.id === id && x.revealed);
-    if (r && fields && typeof fields === "object") setRowFields(r, fields, spec, makeId);
+    if (r && fields && typeof fields === "object") setRowFields(r, fields, spec, makeId, taken);
   }
   for (const a of Array.isArray(lc.add) ? lc.add : []) {
     if (out.length >= max) break;
     if (!a || typeof a !== "object") continue;
-    const id = typeof a.id === "string" && /^[A-Za-z0-9_-]{1,32}$/.test(a.id) && !out.some((x) => x.id === a.id) ? a.id : makeId();
+    // The player's id is kept (their next edit may name it) unless any row in the quest already has it.
+    let id = typeof a.id === "string" && /^[A-Za-z0-9_-]{1,32}$/.test(a.id) && !taken.has(a.id) && !out.some((x) => x.id === a.id) ? a.id : makeId();
+    while (taken.has(id)) id = makeId();
+    taken.add(id);
     const r = { ...TPL[spec.tpl](), id, revealed: true };
-    setRowFields(r, a, spec, makeId);
+    setRowFields(r, a, spec, makeId, taken);
     out.push(r);
   }
   if (Array.isArray(lc.order)) {
+    // Rows the player named change places among the places they hold; rows they can't see (hidden) stay put.
     const pos = new Map(lc.order.map((id, i) => [id, i]));
-    out = [...out.filter((r) => pos.has(r.id)).sort((x, y) => pos.get(x.id) - pos.get(y.id)), ...out.filter((r) => !pos.has(r.id))];
+    const slots = out.map((r, i) => (pos.has(r.id) ? i : -1)).filter((i) => i >= 0);
+    const sorted = slots.map((i) => out[i]).sort((x, y) => pos.get(x.id) - pos.get(y.id));
+    out = [...out];
+    slots.forEach((at, k) => (out[at] = sorted[k]));
   }
   return out;
 }
-function setRowFields(r, fields, spec, makeId) {
-  for (const f of spec.fields) if (f in fields) r[f] = partyValue(f, fields[f]);
-  if (spec.nested && fields[spec.nested]) r[spec.nested] = applyRows(r[spec.nested] ?? [], fields[spec.nested], STEP_ROWS, PARTY_MAX.steps, makeId);
+function setRowFields(r, fields, spec, makeId, taken) {
+  for (const f of spec.fields) if (Object.hasOwn(fields, f)) r[f] = partyValue(f, fields[f]);
+  if (spec.nested && fields[spec.nested]) r[spec.nested] = applyRows(r[spec.nested] ?? [], fields[spec.nested], STEP_ROWS, PARTY_MAX.steps, makeId, taken);
 }
 
+/** Add a party note (anyone) or delete one (its author, or the GM). Changes `t` in place; true when it changed. */
 function applyQuestNote(t, op, { id = null, by, name = "", text = "", isGM = false } = {}) {
   if (t?.kind !== "quest") return false;
   t.pnotes = Array.isArray(t.pnotes) ? t.pnotes : [];
@@ -576,26 +595,26 @@ function questNotices(pub) {
     const old = before.get(id);
     if (!old) {
       // A party quest is news to the rest of the party, not to the player who made it.
-      if (!q.party) lines.push(`New quest: ${q.name}`);
-      else if (q.party.by !== game.user.id) lines.push(`New quest from ${q.party.name || "the party"}: ${q.name}`);
-    } else if (old.status !== q.status && (q.status === "completed" || q.status === "failed")) lines.push(`Quest ${q.status}: ${q.name}`);
-    else if (old.party && !q.party) lines.push(`The GM took over ${q.name}`);
+      if (!q.party) lines.push(`New quest: ${esc(q.name)}`);
+      else if (q.party.by !== game.user.id) lines.push(`New quest from ${esc(q.party.name || "the party")}: ${esc(q.name)}`);
+    } else if (old.status !== q.status && (q.status === "completed" || q.status === "failed")) lines.push(`Quest ${q.status}: ${esc(q.name)}`);
+    else if (old.party && !q.party) lines.push(`The GM took over ${esc(q.name)}`);
     else if (questHash(old) !== questHash(q) && q.party) {
       // The party edits its own quests a lot: an Updated mark, no notice; nothing at all for this player's own edit.
       const mine = Date.now() - (ownEdits.get(id) ?? 0) < 15000 || onlyOwnTicks(old, q);
       if (mine && seenMap()[id] === questHash(old)) markSeen(q);
       ownTicks.delete(id);
     } else if (questHash(old) !== questHash(q)) {
-      if (!onlyOwnTicks(old, q)) lines.push(`Quest updated: ${q.name}`);
+      if (!onlyOwnTicks(old, q)) lines.push(`Quest updated: ${esc(q.name)}`);
       // Their own tick doesn't make the quest new to them either.
       else if (seenMap()[id] === questHash(old)) markSeen(q);
       ownTicks.delete(id);
     }
-    if (old && q.focus && !old.focus && ["active", "lead"].includes(q.status)) lines.push(`Party focus: ${q.name}`);
+    if (old && q.focus && !old.focus && ["active", "lead"].includes(q.status)) lines.push(`Party focus: ${esc(q.name)}`);
     if (old) {
       const had = new Set((old.pnotes ?? []).map((x) => x.id));
       const added = (q.pnotes ?? []).filter((x) => !had.has(x.id) && x.by !== game.user.id);
-      if (added.length) lines.push(`${added.at(-1).name} added a note to ${q.name}`);
+      if (added.length) lines.push(`${esc(added.at(-1).name)} added a note to ${esc(q.name)}`);
     }
   }
   if (!lines.length) return;
@@ -629,7 +648,10 @@ async function onSocket(msg, senderId) {
     if (msg.type === "gmbye") gmTabs.delete(msg.client);
     else {
       gmTabs.set(msg.client, Date.now());
-      if (msg.hello) announceTab(false);
+      if (msg.hello || (msg.client > CLIENT_ID && Date.now() - lastAnswer > 5000)) {
+        lastAnswer = Date.now();
+        announceTab(false);
+      }
     }
     return;
   }
@@ -650,7 +672,7 @@ async function onSocket(msg, senderId) {
   const who = user.character ? pcName(user.character) : user.name;
   if (["qnew", "qedit", "qdel"].includes(msg.type)) return partyRequest(msg, user, who, fail);
   if (msg.type === "qtick") {
-    const party = !!Store.get(msg.tid)?.party;
+    const party = partyTicks(Store.get(msg.tid));
     // Ticks on a party quest are the party's own business: always allowed, and no card for the GM.
     if (!game.settings.get(MOD, "playerTicks") && !party) return;
     const done = await mutateTracker(msg.tid, (t) => applyQuestTick(t, msg.goal, msg.to, user.id) || undefined, { notify: false });
@@ -664,7 +686,7 @@ async function onSocket(msg, senderId) {
     if (now - (lastNoteAt.get(user.id) ?? 0) < 2000) return fail("One note at a time, please. Try again in a moment.");
     lastNoteAt.set(user.id, now);
     const t = Store.get(msg.tid);
-    if ((t?.pnotes?.length ?? 0) >= NOTE_MAX) return fail(`${t.name} has ${NOTE_MAX} notes, the most it holds. Delete some first.`);
+    if ((t?.pnotes?.length ?? 0) >= NOTE_MAX) return fail(`${esc(t.name)} has ${NOTE_MAX} notes, the most it holds. Delete some first.`);
     const added = await mutateTracker(msg.tid, (tr) => applyQuestNote(tr, "add", { by: user.id, name: who, text: msg.text }) || undefined, { notify: false });
     if (!added) fail("Your note didn't go through. Try again.");
   } else if (msg.type === "qnoteDel") {
@@ -681,7 +703,9 @@ async function partyRequest(msg, user, who, fail) {
   if (recent.length >= 30) return fail("That's a lot of changes at once. Wait a moment and try again.");
   partyRate.set(user.id, [...recent, now]);
   if (msg.type === "qnew") {
-    if (Store.data.trackers.filter((t) => t.kind === "quest" && t.party).length >= 100) return fail("There are already 100 party quests. Delete some first.");
+    const party = Store.data.trackers.filter((t) => t.kind === "quest" && t.party);
+    if (party.length >= 100) return fail("There are already 100 party quests. Delete some first.");
+    if (party.filter((t) => t.party.by === user.id).length >= PARTY_PER_PLAYER) return fail(`You've made ${PARTY_PER_PLAYER} party quests, the most one player can. Delete one first, or ask the GM.`);
     const t = { ...blank("quest", partyValue("name", msg.name)), revealed: true, category: "", desc: partyValue("desc", msg.desc), party: { by: user.id, name: who } };
     const made = await mutate((d) => {
       d.trackers.push(t);
@@ -690,12 +714,24 @@ async function partyRequest(msg, user, who, fail) {
     if (made) game.socket.emit(SOCKET, { type: "qmade", to: user.id, tid: t.id });
     else fail("The quest wasn't made. Try again.");
   } else if (msg.type === "qedit") {
-    if (!Store.get(msg.tid)?.party) return fail("Only quests made by players can be edited by players.");
+    const cur = Store.get(msg.tid);
+    if (!cur?.party || !cur.revealed) return fail("Only quests made by players can be edited by players.");
+    // Try it on a copy first: nothing to save when nothing changed, and no edit may make a quest too long.
+    const test = clone(cur);
+    try {
+      applyPartyChanges(test, msg.changes);
+    } catch (err) {
+      console.warn(`${MOD} | a party quest edit couldn't be read`, err);
+      return fail("Your change couldn't be read. Try again.");
+    }
+    if (same(test, cur)) return;
+    const size = JSON.stringify(test).length;
+    if (size > PARTY_QUEST_SIZE && size > JSON.stringify(cur).length) return fail(`That would make ${esc(cur.name)} too long. Shorten or remove something first.`);
     const done = await mutateTracker(msg.tid, (t) => applyPartyChanges(t, msg.changes) || undefined, { notify: false });
     if (!done) fail("Your change didn't go through. Try again.");
   } else if (msg.type === "qdel") {
     const t = Store.get(msg.tid);
-    if (!t?.party || t.party.by !== user.id) return fail("Only the player who made a party quest, or the GM, can delete it.");
+    if (!t?.party || !t.revealed || t.party.by !== user.id) return fail("Only the player who made a party quest, or the GM, can delete it.");
     await mutate((d) => {
       d.trackers = d.trackers.filter((x) => x.id !== t.id);
     }, { notify: false });
@@ -1018,6 +1054,8 @@ const mutateTracker = (id, fn, opts) => (game.user.isGM ? mutate((d) => {
 
 /** Players may make quests the party edits, when the GM lets players see the trackers at all. */
 const partyQuestsOn = () => !!game.settings.get(MOD, "playerAccess") && !!game.settings.get(MOD, "partyQuests");
+/** Ticks on a party quest are the party's own: no "Players can tick" needed, and no card for the GM. */
+const partyTicks = (q) => !!q?.party && partyQuestsOn();
 const canPartyEdit = (t) => !game.user.isGM && t?.kind === "quest" && !!t.party && partyQuestsOn();
 /** When this player last sent an edit to each party quest, so their own edit brings no notice. */
 const ownEdits = new Map();
@@ -1111,7 +1149,7 @@ function project(t, { force = false, all = null } = {}) {
       return {
         ...p, status: t.status, category: t.category, focus: !!t.focus, img: t.img, party: t.party ? { by: t.party.by, name: t.party.name } : null,
         giver: t.giver ? { name: t.giver.name, img: t.giver.img } : t.giverText ? { name: t.giverText, img: "" } : null,
-        location: t.location, deadline: t.showDue !== false ? t.deadline : null,
+        location: t.location, deadline: t.showDue !== false ? t.deadline : null, dueHidden: t.party && t.showDue === false ? true : undefined,
         objectives: shown(t.objectives).map((o) => ({ ...goal(o), mode: o.mode, steps: shown(o.steps).map(goal) })),
         entries: shown(t.entries).map((e) => ({ id: e.id, date: e.date, text: e.text })),
         leads: shown(t.leads).map((l) => {
@@ -2453,15 +2491,15 @@ function questHead(q, { gm }) {
 }
 
 /** An objective or step's count and its state box. The GM's box is a button; left click done, right click failed. */
-function goalLine(g, path, { gm, steps = null, mode = "all", tick = false }) {
+function goalLine(g, path, { gm, steps = null, mode = "all", tick = false, party = false, counts = false }) {
   const can = tick && (g.state === "open" || (g.state === "done" && g.doneBy === "player"));
   const box = gm
     ? A("pctQState", GOAL_ICON[g.state] ?? GOAL_ICON.open, { tip: "Click: done or open. Right-click: failed or open.", data: { goal: g.id }, cls: `pct-qbox pct-q-${g.state}` })
     : can
-      ? A("pctQTick", GOAL_ICON[g.state] ?? GOAL_ICON.open, { tip: g.state === "open" ? "Mark done. The GM is told." : "Mark open again", data: { goal: g.id, to: g.state === "open" ? "done" : "open" }, cls: `pct-qbox pct-q-${g.state}` })
+      ? A("pctQTick", GOAL_ICON[g.state] ?? GOAL_ICON.open, { tip: g.state === "open" ? (party ? "Mark done" : "Mark done. The GM is told.") : "Mark open again", data: { goal: g.id, to: g.state === "open" ? "done" : "open" }, cls: `pct-qbox pct-q-${g.state}` })
       : `<i class="pct-qbox pct-q-${esc(g.state)} ${GOAL_ICON[g.state] ?? GOAL_ICON.open}" ${g.state === "done" && g.doneBy === "gm" && tick ? `data-tooltip="Marked by the GM"` : ""}></i>`;
   const count = g.count !== null && g.count !== undefined
-    ? gm ? stepper(`${path}.have`, num(g.have), { fmt: (v) => `${v} of ${g.count}` }) : `<span class="pct-chip">${num(g.have)} of ${g.count}</span>`
+    ? gm || counts ? stepper(`${path}.have`, num(g.have), { fmt: (v) => `${v} of ${g.count}` }) : `<span class="pct-chip">${num(g.have)} of ${g.count}</span>`
     : "";
   let stepNote = "";
   if (steps && steps.length) {
@@ -2479,11 +2517,13 @@ function goalLine(g, path, { gm, steps = null, mode = "all", tick = false }) {
 /** The quest's objectives (with their steps), journal, leads and rewards. `gm` adds eyes, notes and controls;
  * `open` names the sections the GM is editing in place, which show their editor instead. */
 function questBody(q, { gm, party = false, all = [], open = new Set() }) {
-  const tick = !gm && !game.user.isGM && ["active", "lead"].includes(q.status) && (!!game.settings.get(MOD, "playerTicks") || !!q.party);
+  const tick = !gm && !game.user.isGM && ["active", "lead"].includes(q.status) && (!!game.settings.get(MOD, "playerTicks") || partyTicks(q));
+  // Party ticks send the GM no card; the party's own editor view can count progress too.
+  const own = partyTicks(q);
   const objectives = q.objectives.map((o, i) => {
     const p = `objectives.${i}`;
-    const steps = o.steps.map((st, j) => `<li class="pct-q-${esc(st.state)}">${gm ? eye(`${p}.steps.${j}`, st.revealed) : ""}${goalLine(st, `${p}.steps.${j}`, { gm, tick })}${gm && st.gm ? `<div class="pct-gm">${para(st.gm)}</div>` : ""}</li>`).join("");
-    return `<li class="pct-q-${esc(o.state)}"><div class="pct-qrow">${gm ? eye(p, o.revealed) : ""}${goalLine(o, p, { gm, steps: o.steps, mode: o.mode, tick })}</div>
+    const steps = o.steps.map((st, j) => `<li class="pct-q-${esc(st.state)}">${gm ? eye(`${p}.steps.${j}`, st.revealed) : ""}${goalLine(st, `${p}.steps.${j}`, { gm, tick, party: own, counts: party })}${gm && st.gm ? `<div class="pct-gm">${para(st.gm)}</div>` : ""}</li>`).join("");
+    return `<li class="pct-q-${esc(o.state)}"><div class="pct-qrow">${gm ? eye(p, o.revealed) : ""}${goalLine(o, p, { gm, steps: o.steps, mode: o.mode, tick, party: own, counts: party })}</div>
         ${gm && o.gm ? `<div class="pct-gm">${para(o.gm)}</div>` : ""}
         ${steps ? `<ul class="pct-qsteps"><li class="pct-k">${o.mode === "any" ? "Any one of these" : "All of these"}</li>${steps}</ul>` : ""}</li>`;
   }).join("");
@@ -2547,7 +2587,7 @@ function partyLine(t, gm) {
   const tools = gm
     ? `<span class="pct-partytools">${t.category !== "Main" ? A("pctQMain", "fa-solid fa-flag", { label: "Make it a main quest", tip: "Set its category to Main. It stays a party quest." }) : ""}${A("pctQTake", "fa-solid fa-hand", { label: "Take it over", tip: "Make it your quest: you can add hidden parts and GM notes, and players go back to ticking and notes" })}</span>`
     : "";
-  return `<p class="pct-hint pct-partyline"><i class="fa-solid fa-users"></i> <span>A party quest, made by ${esc(by)}. ${gm ? "Players can edit it." : "Anyone in the party can edit it."}</span>${tools}</p>`;
+  return `<p class="pct-hint pct-partyline"><i class="fa-solid fa-users"></i> <span>A party quest, made by ${esc(by)}. ${gm ? (partyQuestsOn() ? "Players can edit it." : "Players can't edit it while \"Players can make quests\" is off.") : "Anyone in the party can edit it."}</span>${tools}</p>`;
 }
 
 /** The GM's quest, with the details and GM notes editable in place too. */
@@ -2839,7 +2879,7 @@ const QEDIT_PARTY = {
     return `<div class="pct-edit">${L("Name", F.text("name", t.name), "pct-block")}
       ${L("Summary", F.area("desc", t.desc, "What the quest is about"), "pct-block")}
       <div class="pct-line">${L("Status", F.select("status", t.status, QSTATUS.map((x) => [x, QSTATUS_LABEL[x]])))}
-        ${L("Category", F.text("category", t.category, "Side", "pct-w8"))}${L("Due", F.date("deadline", t.deadline))}</div>
+        ${L("Category", F.text("category", t.category, "Side", "pct-w8"))}${t.dueHidden ? "" : L("Due", F.date("deadline", t.deadline))}</div>
       <div class="pct-line">${t.giver?.img ? "" : L("Given by", F.text("giverText", giverName, "Maud Holloway"), "pct-grow")}${L("Where", F.text("location", t.location, "Ridge Road"), "pct-grow")}</div></div>`;
   },
   objectives: (t) => listEditor("objectives", t.objectives, (o, p) => `${partyGoalEdit(o, p, "Objective")}
@@ -3190,7 +3230,7 @@ const qpBtn = (qp, icon, tip, data = {}) => `<a class="pct-qp-btn" data-qp="${qp
 function panelGoal(q, g, tick, steps = null) {
   const gm = game.user.isGM;
   const box = tick
-    ? `<a class="pct-qp-box" data-qp="tick" data-tid="${esc(q.id)}" data-goal="${esc(g.id)}" data-tooltip="${gm ? "Click: done. Right-click: failed." : "Mark done. The GM is told."}"><i class="fa-regular fa-square"></i></a>`
+    ? `<a class="pct-qp-box" data-qp="tick" data-tid="${esc(q.id)}" data-goal="${esc(g.id)}" data-tooltip="${gm ? "Click: done. Right-click: failed." : partyTicks(q) ? "Mark done" : "Mark done. The GM is told."}"><i class="fa-regular fa-square"></i></a>`
     : `<i class="pct-qp-box fa-regular fa-square"></i>`;
   const chips = [g.count !== null && g.count !== undefined ? `${num(g.have)} of ${g.count}` : "", g.optional ? "optional" : ""];
   if (steps?.length) {
@@ -3203,7 +3243,7 @@ function panelGoal(q, g, tick, steps = null) {
 
 function panelQuest(q, folded, pins) {
   const gm = game.user.isGM;
-  const tick = gm || !!game.settings.get(MOD, "playerTicks");
+  const tick = gm || !!game.settings.get(MOD, "playerTicks") || partyTicks(q);
   const main = q.objectives.filter((o) => !o.optional);
   const done = main.filter((o) => o.state === "done").length;
   const shut = folded.has(q.id);
@@ -3313,7 +3353,7 @@ async function onPanelClick(ev) {
     renderPanel();
   } else if (qp === "close") {
     await game.settings.set(MOD, "questPanel", false);
-    ui.notifications.info("Quest panel hidden. Show the quest panel on the Quests tab brings it back.");
+    ui.notifications.info('Quest panel hidden. To bring it back, choose "Show the quest panel" on the Quests tab.');
   } else if (qp === "fold") {
     const folded = new Set(Array.isArray(st.folded) ? st.folded : []);
     folded.has(tid) ? folded.delete(tid) : folded.add(tid);
@@ -3439,7 +3479,7 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
 
   async _renderHTML() {
     const all = this.trackers();
-    const kinds = this.isGM ? KINDS : KINDS.filter((k) => all.some((t) => t.kind === k));
+    const kinds = this.isGM ? KINDS : KINDS.filter((k) => all.some((t) => t.kind === k) || (k === "quest" && partyQuestsOn()));
     if (!kinds.includes(this.state.tab)) this.state.tab = kinds[0] ?? null;
     const el = document.createElement("div");
     el.className = "pct";
@@ -3487,7 +3527,7 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
         const done = main.filter((o) => o.state === "done").length;
         const mark = game.user.isGM || q.id === this.state.quest ? "" : unseen(q);
         return `<li><a data-action="pctQuestGo" data-qid="${esc(q.id)}" class="pct-qli-${esc(q.status)} ${q.id === this.state.quest ? "active" : ""} ${this.isGM && !q.revealed ? "pct-hiddenq" : ""}">
-            ${this.isGM && !q.revealed ? `<i class="fa-solid fa-eye-slash" data-tooltip="Hidden from players"></i>` : ""}<span>${esc(q.name)}</span>${q.party ? `<i class="fa-solid fa-users pct-qli-ico" data-tooltip="${esc(`A party quest, made by ${q.party.by === game.user.id ? "you" : q.party.name || "a player"}`)}"></i>` : ""}${q.focus ? `<i class="fa-solid fa-star pct-qli-ico" data-tooltip="Party focus"></i>` : ""}${pins.has(q.id) ? `<i class="fa-solid fa-thumbtack pct-qli-ico" data-tooltip="Pinned to your quest panel"></i>` : ""}${mark ? `<b class="pct-qnew">${mark === "new" ? "New" : "Updated"}</b>` : ""}
+            ${this.isGM && !q.revealed ? `<i class="fa-solid fa-eye-slash" data-tooltip="Hidden from players"></i>` : ""}<span>${esc(q.name)}</span>${q.party ? `<i class="fa-solid fa-users pct-qli-ico" data-tooltip-text="${esc(`A party quest, made by ${q.party.by === game.user.id ? "you" : q.party.name || "a player"}`)}"></i>` : ""}${q.focus ? `<i class="fa-solid fa-star pct-qli-ico" data-tooltip="Party focus"></i>` : ""}${pins.has(q.id) ? `<i class="fa-solid fa-thumbtack pct-qli-ico" data-tooltip="Pinned to your quest panel"></i>` : ""}${mark ? `<b class="pct-qnew">${mark === "new" ? "New" : "Updated"}</b>` : ""}
             <small>${[q.category, main.length ? `${done}/${main.length}` : ""].filter(Boolean).map(esc).join(" · ")}</small></a></li>`;
       }).join("")}</ul>`;
     }).join("");
@@ -3658,7 +3698,7 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     const text = area?.value.trim();
     if (!t || !text) return;
     if (this.isGM) {
-      if ((t.pnotes?.length ?? 0) >= NOTE_MAX) return ui.notifications.warn(`${t.name} has ${NOTE_MAX} notes, the most it holds. Delete some first.`);
+      if ((t.pnotes?.length ?? 0) >= NOTE_MAX) return ui.notifications.warn(`${esc(t.name)} has ${NOTE_MAX} notes, the most it holds. Delete some first.`);
       await mutateTracker(t.id, (tr) => applyQuestNote(tr, "add", { by: game.user.id, name: "GM", text, isGM: true }) || undefined, { notify: false });
     } else if (game.user.isGM) {
       return;

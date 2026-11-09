@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 2.1.0
 
-- Party quests: players make quests of their own (New quest on the Quests tab), and anyone in the party can edit them: the name, summary, status, category, giver, place, due date, objectives and steps, journal entries, leads and rewards. A GM needs to be logged in, since the GM's client records every change. Only the player who made a party quest, or the GM, can delete it. Ticks on a party quest need no GM card. The rest of the party gets a notice when one is made; edits show as Updated without a notice. A setting, "Players can make quests", turns this off.
+- Party quests: players make quests of their own (New quest on the Quests tab), and anyone in the party can edit them: the name, summary, status, category, giver, place, due date, objectives and steps, journal entries, leads and rewards. A GM needs to be logged in, since the GM's client records every change. Only the player who made a party quest, or the GM, can delete it, and each player can make up to 20. Ticks and counts on a party quest need no GM card. The rest of the party gets a notice when one is made; edits show as Updated without a notice. A setting, "Players can make quests", turns this off.
 - On a party quest, the GM has two buttons: Make it a main quest (it stays a party quest) and Take it over, which makes it an ordinary GM quest. Players keep seeing it, go back to ticking and notes, and get a notice that the GM took it over.
 - A GM logged in from two browser tabs no longer answers players' requests twice (a note or a party quest could be added twice). One tab answers.
 - Players' requests (ticks, notes, party quests) are checked against the user Foundry says sent them, so a player can't act as another.

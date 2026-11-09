@@ -1,6 +1,6 @@
 # PF2e Campaign Trackers
 
-A quest log, GM Core's subsystems and a few table-neutral trackers in one window: Quests, Reputation, Pressure, Victory Points, Skill Challenges, Influence, Research, Chases, Infiltration, Clocks and Checklists. Everything is hidden from players until the GM reveals it. Quests have objectives with steps, leads between quests and reveals prepared for when something is done; players can tick objectives and add notes, and a panel keeps the party's quests on screen. Checks roll through the PF2e system and the GM applies the result from the roll card. In a skill challenge, players can propose their own approach and the GM approves it with a DC on the spot. Dates on clocks, checklists and quests send the GM a whisper when the calendar reaches them. Other modules can ship campaign content as a preset.
+A quest log, GM Core's subsystems and a few table-neutral trackers in one window: Quests, Reputation, Pressure, Victory Points, Skill Challenges, Influence, Research, Chases, Infiltration, Clocks and Checklists. Everything is hidden from players until the GM reveals it. Quests have objectives with steps, leads between quests and reveals prepared for when something is done; players can tick objectives, add notes and start party quests of their own, and a panel keeps the party's quests on screen. Checks roll through the PF2e system and the GM applies the result from the roll card. In a skill challenge, players can propose their own approach and the GM approves it with a DC on the spot. Dates on clocks, checklists and quests send the GM a whisper when the calendar reaches them. Other modules can ship campaign content as a preset.
 
 ## What it looks like
 
@@ -222,11 +222,27 @@ The pencil on a quest edits all of it. Each section also has its own pencil and 
 - Read what you've revealed, and nothing else: no GM notes, no hidden objectives, steps or leads. A lead names the quest it points to only once that quest is revealed.
 - Tick a revealed objective or step done. You get a card each time, with anything you prepared to reveal. They can untick what a player ticked, but not what you marked. Turn this off with the setting "Players can tick quest objectives".
 - Add notes to a quest, signed with their character's name. Everyone sees them. Players delete their own; you can delete any.
-- Players' ticks and notes go through a GM's client, so a GM needs to be logged in for them.
+- Start party quests of their own (below).
+- Players' ticks, notes and party quests go through a GM's client, so a GM needs to be logged in for them.
+
+**Party quests.** Players can start a quest themselves with **New quest** on the Quests tab, for anything they want to keep track of, so you aren't the only one making and keeping quests. Anyone in the party can edit a party quest: its name, summary, status, category, giver, place and due date, its objectives and steps, journal, leads and rewards. What they add is revealed. Only the player who made it, or you, can delete it. The rest of the party gets a notice when one is made; edits only mark it Updated. Party quests have a party icon in the list.
+
+A party quest is yours to edit too, and you can add hidden parts and GM notes that players can't see or change. Two buttons sit on it: **Make it a main quest** sets its category to Main and leaves it a party quest; **Take it over** makes it an ordinary quest of yours, with everything in it kept. Players still see it, go back to ticking and adding notes, and are told you took it over. Turn party quests off with the setting "Players can make quests".
+
+<table>
+<tr>
+<td width="50%" valign="top"><img src="docs/images/party-quest-player.png" alt="A party quest, player view"></td>
+<td width="50%" valign="top"><img src="docs/images/party-quest-gm.png" alt="A party quest, GM view"></td>
+</tr>
+<tr>
+<td valign="top">A party quest in the window of the player who made it: every section has its pencil and +, and they can delete it.</td>
+<td valign="top">The same quest as the GM sees it, with <b>Make it a main quest</b> and <b>Take it over</b>.</td>
+</tr>
+</table>
 
 **Notices.** When a quest is revealed, changes, is completed or fails, or gets a note, players get a short notice on screen, and the quest is marked New or Updated in their list until they open it. Nothing goes to chat. The setting "Quest notice sound" plays a sound with the notice (off unless you pick one).
 
-**The quest panel.** A small panel on screen with the quests in play and their open objectives, so nobody has to open the window. It shows the party's focus first: the star on a quest makes it the focus for everyone. Then the quests each person pinned with the pin (up to three in all; pins are kept in that person's browser). Players can tick objectives right in the panel, and clicking a quest's name opens it in the window. Your panel also shows hidden objectives, dimmed. Drag the panel by its header; it remembers where. Each person can turn it off with "Show the quest panel". Turning off "Players can open the trackers" hides it from players too.
+**The quest panel.** A small panel on screen with the quests in play and their open objectives, so nobody has to open the window. It shows the party's focus first: the star on a quest makes it the focus for everyone. Then the quests each person pinned with the pin (up to three in all; pins are kept in that person's browser). Players can tick objectives right in the panel, and clicking a quest's name opens it in the window. Your panel also shows hidden objectives, dimmed. Drag the panel by its header; it remembers where. Each person can close it with the × on its header (or the setting "Show the quest panel"); **Show the quest panel** on the Quests tab brings it back. Turning off "Players can open the trackers" hides it from players too.
 
 <img src="docs/images/quest-panel.png" alt="The quest panel" width="300">
 
@@ -258,6 +274,8 @@ api.adjust("tracker-id", "value", 1);
 api.set("tracker-id", "segments.2.state", "filled");
 api.reveal("tracker-id");
 api.list()   // every tracker, with its id
+api.openQuest("quest-id")   // open the window on a quest the user can see
+api.quests()   // the quests the user can see: id, name, status, category
 ```
 
 ## Changes
