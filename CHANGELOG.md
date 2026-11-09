@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.3.0
+
+- The window remembers its size and place, in each browser.
+- `api.open()` can open the window on a tab: `api.open("reputation")`, a tab's label such as `api.open("Victory Points")`, or a tracker's id (its tab, and for a quest that quest). A name it doesn't know opens the window where it was left.
+- Restoring the window from minimized brings it back at its full size (on Foundry 14.370 it came back as a thin strip), including when it's opened while minimized.
+- Verified on Foundry 14.370.
+
 ## 2.2.0
 
 - GM notes on a quest (on the quest itself and on each objective, step, lead and reward) show in a purple box marked GM, so they never read as something players see.

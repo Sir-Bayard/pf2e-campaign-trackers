@@ -101,9 +101,9 @@ It replaces PF2e Subsystems. Rebuild any event you had there as a tracker here, 
 
 Token controls on the left: the list icon at the bottom of the list. Keyboard: Alt+T (change it under Configure Controls).
 
-Macro: `game.modules.get("pf2e-campaign-trackers").api.open()`
+Macro: `game.modules.get("pf2e-campaign-trackers").api.open()`, or `api.open("reputation")` to open it on a tab (see [For macros](#for-macros)).
 
-The window remembers its tab, which cards are folded and which GM-notes boxes are open, in this browser.
+The window remembers its size and place, its tab, which cards are folded and which GM-notes boxes are open, in this browser.
 
 ## The tabs
 
@@ -274,6 +274,10 @@ api.adjust("tracker-id", "value", 1);
 api.set("tracker-id", "segments.2.state", "filled");
 api.reveal("tracker-id");
 api.list()   // every tracker, with its id
+api.open()   // open the window where it was left
+api.open("reputation")   // open it on a tab: "quest", "reputation", "pressure", "points", "challenge", "influence",
+                         // "research", "chase", "infiltration", "clock", "checklist", a tab's label ("Victory Points"),
+                         // or a tracker's id (its tab; for a quest, that quest)
 api.openQuest("quest-id")   // open the window on a quest the user can see
 api.quests()   // the quests the user can see: id, name, status, category
 ```

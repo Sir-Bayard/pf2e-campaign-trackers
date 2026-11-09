@@ -3343,8 +3343,7 @@ function openQuest(id, sec = null) {
   app.state.quest = id;
   if (sec) app.state.qedit.add(`${id}:${sec}`);
   saveUI(app.state);
-  app.render({ force: true });
-  if (app.minimized) app.maximize();
+  app.show();
 }
 
 async function onPanelClick(ev) {
@@ -3394,6 +3393,62 @@ function saveUI(state) {
   } catch {
     /* no storage: the state lives only in this window */
   }
+}
+
+const SIZE_KEY = `${MOD}.size`;
+/** The window's last size and place in this browser, kept inside the screen. */
+function loadSize() {
+  let v;
+  try {
+    v = JSON.parse(localStorage.getItem(SIZE_KEY));
+  } catch {
+    return {};
+  }
+  if (!v || typeof v !== "object") return {};
+  // A size saved while the window was collapsed is no size at all.
+  if (!(v.width >= 400 && v.height >= 250)) return {};
+  const out = {};
+  const W = window.innerWidth, H = window.innerHeight;
+  out.width = Math.max(400, Math.min(v.width, W));
+  out.height = Math.max(250, Math.min(v.height, H));
+  if (Number.isFinite(v.left)) out.left = Math.max(0, Math.min(v.left, W - out.width));
+  if (Number.isFinite(v.top)) out.top = Math.max(0, Math.min(v.top, H - out.height));
+  return out;
+}
+let sizeTimer = null;
+function saveSize(pos) {
+  clearTimeout(sizeTimer);
+  sizeTimer = setTimeout(() => {
+    try {
+      localStorage.setItem(SIZE_KEY, JSON.stringify({ width: pos.width, height: pos.height, left: pos.left, top: pos.top }));
+    } catch {
+      /* no storage: the window opens at its default size */
+    }
+  }, 300);
+}
+
+/** Wait for an element's own transitions to end; a hidden tab pauses them, so after a second they're finished by hand. */
+async function settle(el) {
+  const anims = el.getAnimations?.() ?? [];
+  if (!anims.length) return;
+  await Promise.race([Promise.all(anims.map((a) => a.finished.catch(() => null))), new Promise((r) => setTimeout(r, 1200))]);
+  for (const a of el.getAnimations?.() ?? []) {
+    try {
+      a.finish();
+    } catch {
+      /* an animation that can't finish (infinite) is left alone */
+    }
+  }
+}
+
+/** A tab named by its kind ("reputation"), its label ("Victory Points") or a tracker's id; null when nothing matches. */
+function findTab(name) {
+  if (typeof name !== "string" || !name.trim()) return null;
+  const n = name.trim().toLowerCase();
+  const kind = KINDS.find((k) => k === n || KIND_INFO[k].tab.toLowerCase() === n || KIND_INFO[k].label.toLowerCase() === n);
+  if (kind) return { kind };
+  const t = (game.user.isGM ? Store.data?.trackers : game.settings.get(MOD, "public")?.trackers)?.find((x) => x.id === name.trim());
+  return t ? { kind: t.kind, tid: t.id } : null;
 }
 
 class TrackersApp extends foundry.applications.api.ApplicationV2 {
@@ -3457,6 +3512,10 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
       pctPresets: TrackersApp.#onPresets,
     },
   };
+
+  constructor(options = {}) {
+    super(foundry.utils.mergeObject({ position: loadSize() }, options));
+  }
 
   state = (() => {
     const ui = loadUI();
@@ -3614,6 +3673,44 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
 
   _onClose() {
     openApps.delete(this);
+  }
+
+  /* Foundry restores a minimized window to its measured size on screen, which is smaller than its real size when
+   * the interface is scaled; keep the real size from before and put it back. */
+  #beforeMin = null;
+  #restoring = false;
+  async minimize() {
+    if (!this.minimized && this.rendered) this.#beforeMin = { width: this.position.width, height: this.position.height };
+    return super.minimize();
+  }
+  async maximize() {
+    if (!this.minimized) return super.maximize();
+    const was = this.#beforeMin;
+    this.#restoring = true;
+    try {
+      await super.maximize();
+      // Foundry sets the size while its max-height transition may still be running, which clamps the height to the
+      // header's; let it end first.
+      await settle(this.element);
+      if (was) this.setPosition(was);
+    } finally {
+      this.#restoring = false;
+    }
+  }
+
+  /** Remember the size and place the user gives the window (not while it's minimized or being restored). */
+  _onPosition(position) {
+    super._onPosition?.(position);
+    if (!this.rendered || this.minimized || this.#restoring) return;
+    if (![position.width, position.height, position.left, position.top].every(Number.isFinite)) return;
+    if (position.width < 400 || position.height < 250) return;
+    saveSize(position);
+  }
+
+  /** Draw the window, restoring it first if it's minimized (a draw that ends while it's collapsed sizes it wrong). */
+  async show() {
+    if (this.minimized) await this.maximize();
+    return this.render({ force: true });
   }
 
   async #onChange(ev) {
@@ -4131,11 +4228,20 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     ui.notifications.info(`Campaign Trackers: imported ${Store.data.trackers.length} trackers from "${file.name}".`);
   }
 
-  static open() {
+  /** Open the window, on a tab if one is named (see findTab). */
+  static open(tab = null) {
     if (!game.user.isGM && !game.settings.get(MOD, "playerAccess")) return ui.notifications.warn("The GM hasn't opened the campaign trackers to players.");
-    const existing = [...openApps][0];
-    if (existing) return existing.render({ force: true });
-    return new TrackersApp().render({ force: true });
+    const app = [...openApps][0] ?? new TrackersApp();
+    if (tab != null) {
+      const to = findTab(tab);
+      if (!to) console.warn(`${MOD} | api.open: no tab or tracker called "${tab}"; opening as last left`);
+      else {
+        app.state.tab = to.kind;
+        if (to.kind === "quest" && to.tid) app.state.quest = to.tid;
+        saveUI(app.state);
+      }
+    }
+    return app.show();
   }
 }
 
@@ -4204,7 +4310,7 @@ Hooks.once("ready", () => {
 });
 Hooks.once("ready", async () => {
   const api = {
-    open: () => TrackersApp.open(),
+    open: (tab) => TrackersApp.open(tab),
     /** Open the window on a quest this user can see (another module's link to it, say). */
     openQuest: (id) => openQuest(id),
     /** The quests this user can see: id, name, status and category. */
