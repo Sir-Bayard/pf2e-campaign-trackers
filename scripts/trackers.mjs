@@ -544,6 +544,7 @@ function markSeen(q) {
   const h = questHash(q);
   if (map[q.id] === h) return;
   map[q.id] = h;
+  changedSoon();
   try {
     localStorage.setItem(SEEN_KEY, JSON.stringify(map));
   } catch {
@@ -2519,8 +2520,8 @@ function goalLine(g, path, { gm, steps = null, mode = "all", tick = false, party
 
 /** The quest's objectives (with their steps), journal, leads and rewards. `gm` adds eyes, notes and controls;
  * `open` names the sections the GM is editing in place, which show their editor instead. */
-function questBody(q, { gm, party = false, all = [], open = new Set() }) {
-  const tick = !gm && !game.user.isGM && ["active", "lead"].includes(q.status) && (!!game.settings.get(MOD, "playerTicks") || partyTicks(q));
+function questBody(q, { gm, party = false, all = [], open = new Set(), readOnly = false }) {
+  const tick = !readOnly && !gm && !game.user.isGM && ["active", "lead"].includes(q.status) && (!!game.settings.get(MOD, "playerTicks") || partyTicks(q));
   // Party ticks send the GM no card; the party's own editor view can count progress too.
   const own = partyTicks(q);
   const objectives = q.objectives.map((o, i) => {
@@ -2540,7 +2541,7 @@ function questBody(q, { gm, party = false, all = [], open = new Set() }) {
     const actor = r.actor ? `<a class="pct-npc" data-action="pctOpenActor" data-uuid="${esc(r.actor.uuid)}" data-tooltip="Open the sheet">${r.actor.img ? `<img src="${esc(r.actor.img)}" alt="">` : ""}<strong>${esc(r.actor.name)}</strong></a>` : "";
     return `<li>${gm ? eye(`rewards.${i}`, r.revealed) : ""}<i class="fa-solid fa-gem"></i><span>${para(r.text)}</span>${actor}${gm && r.gm ? gmBox(r.gm) : ""}</li>`;
   }).join("");
-  const notes = partyNotes(q, { gm });
+  const notes = partyNotes(q, { gm, readOnly });
   if (!gm && !party) {
     return `${objectives ? `<div class="pct-sub">Objectives</div><ul class="pct-qgoals">${objectives}</ul>` : ""}
       ${entries ? `<div class="pct-sub">Journal</div><ul class="pct-qjournal">${entries}</ul>` : ""}
@@ -2565,8 +2566,8 @@ function questBody(q, { gm, party = false, all = [], open = new Set() }) {
 }
 
 /** The party's shared notes on a quest: anyone adds one, signed; its author or the GM deletes it. */
-function partyNotes(q, { gm }) {
-  const preview = !gm && game.user.isGM;
+function partyNotes(q, { gm, readOnly = false }) {
+  const preview = readOnly || (!gm && game.user.isGM);
   const inJournal = (n) => (q.entries ?? []).some((e) => e.from === n.id);
   const toJournal = (n) => (!gm ? "" : inJournal(n)
     ? `<i class="fa-solid fa-book pct-qnote-kept" data-tooltip="In the journal"></i>`
@@ -3138,8 +3139,16 @@ const openApps = new Set();
 let refreshTimer = null;
 /** Fields a redraw would pull the keyboard out of. Checkboxes are fine: a tick should show at once. */
 const TYPING = "textarea, select, input:not([type=checkbox]):not([type=radio])";
+/** Tell other modules (Bayard's Campaign Journal) that trackers or this user's seen marks changed, once per burst. */
+let changedTimer = null;
+function changedSoon() {
+  clearTimeout(changedTimer);
+  changedTimer = setTimeout(() => Hooks.callAll(`${MOD}.changed`), 150);
+}
+
 function refresh() {
   clearTimeout(refreshTimer);
+  changedSoon();
   refreshTimer = setTimeout(() => {
     renderPanel();
     for (const app of openApps) {
@@ -3336,6 +3345,40 @@ function onPanelDrag(ev) {
 }
 
 /** Open the window on a quest, with one of its sections open for editing if asked. */
+/** A quest as the players see it, read-only, wrapped in this module's styles; null when players can't see it. */
+function questReadOnly(id) {
+  const q = visibleTrackers({ asPlayer: true }).find((t) => t.id === id && t.kind === "quest");
+  if (!q) return null;
+  const html = `${q.desc ? `<p class="pct-desc">${para(q.desc)}</p>` : ""}${questHead(q, { gm: false })}${questBody(q, { gm: false, readOnly: true })}`;
+  return `<div class="pct-app pct-embed"><div class="pct">${html.replaceAll('data-action="', 'data-pct-action="')}</div></div>`;
+}
+
+/** @Quest[id]{label} in journal text: a link that opens the quest. */
+const QUEST_LINK = /@Quest\[([A-Za-z0-9_-]{1,64})\](?:\{([^}]{1,200})\})?/g;
+function enrichQuestLink(match) {
+  const [, id, label] = match;
+  const q = visibleTrackers().find((t) => t.id === id && t.kind === "quest");
+  const known = !!q && (game.user.isGM || q.revealed !== false);
+  const a = document.createElement("a");
+  a.className = `pct-quest-link${known ? "" : " pct-quest-unknown"}`;
+  a.dataset.questId = id;
+  if (!known) a.dataset.tooltip = game.user.isGM ? "No quest with this id" : "Not revealed yet";
+  a.innerHTML = `<i class="fa-solid fa-scroll"></i>`;
+  a.append(document.createTextNode(label || q?.name || "Unknown quest"));
+  return a;
+}
+/** A quest link was clicked: another module may show it (return false from the hook), else the window opens on it. */
+function onQuestLink(ev) {
+  const a = ev.target.closest?.("a.pct-quest-link");
+  if (!a) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  const id = a.dataset.questId;
+  if (!visibleTrackers().some((t) => t.id === id && t.kind === "quest")) return ui.notifications.info("That quest isn't open to you yet.");
+  if (Hooks.call(`${MOD}.questLink`, id, a) === false) return;
+  openQuest(id);
+}
+
 function openQuest(id, sec = null) {
   if (!game.user.isGM && !game.settings.get(MOD, "playerAccess")) return;
   const app = [...openApps][0] ?? new TrackersApp();
@@ -3595,7 +3638,7 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
         const main = q.objectives.filter((o) => !o.optional);
         const done = main.filter((o) => o.state === "done").length;
         const mark = game.user.isGM || q.id === this.state.quest ? "" : unseen(q);
-        return `<li><a data-action="pctQuestGo" data-qid="${esc(q.id)}" class="pct-qli-${esc(q.status)} ${q.id === this.state.quest ? "active" : ""} ${this.isGM && !q.revealed ? "pct-hiddenq" : ""}">
+        return `<li><a data-action="pctQuestGo" data-qid="${esc(q.id)}" draggable="true" class="pct-qli-${esc(q.status)} ${q.id === this.state.quest ? "active" : ""} ${this.isGM && !q.revealed ? "pct-hiddenq" : ""}">
             ${this.isGM && !q.revealed ? `<i class="fa-solid fa-eye-slash" data-tooltip="Hidden from players"></i>` : ""}<span>${esc(q.name)}</span>${q.party ? `<i class="fa-solid fa-users pct-qli-ico" data-tooltip-text="${esc(`A party quest, made by ${q.party.by === game.user.id ? "you" : q.party.name || "a player"}`)}"></i>` : ""}${q.focus ? `<i class="fa-solid fa-star pct-qli-ico" data-tooltip="Party focus"></i>` : ""}${pins.has(q.id) ? `<i class="fa-solid fa-thumbtack pct-qli-ico" data-tooltip="Pinned to your quest panel"></i>` : ""}${mark ? `<b class="pct-qnew">${mark === "new" ? "New" : "Updated"}</b>` : ""}
             <small>${[q.category, main.length ? `${done}/${main.length}` : ""].filter(Boolean).map(esc).join(" · ")}</small></a></li>`;
       }).join("")}</ul>`;
@@ -3649,6 +3692,12 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
 
   _onFirstRender() {
     openApps.add(this);
+    this.element.addEventListener("dragstart", (ev) => {
+      const a = ev.target.closest?.(".pct-qlist a[data-qid]");
+      if (!a) return;
+      const q = visibleTrackers().find((t) => t.id === a.dataset.qid);
+      if (q) ev.dataTransfer.setData("text/plain", `@Quest[${q.id}]{${String(q.name).replace(/[{}]/g, "")}}`);
+    });
     this.element.addEventListener("change", (ev) => this.#onChange(ev));
     // A redraw put off while a field had focus happens once focus leaves the form (refresh checks again).
     this.element.addEventListener("focusout", () => {
@@ -4274,6 +4323,8 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
 /* ------------------------------------------------------------------ */
 
 Hooks.once("init", () => {
+  CONFIG.TextEditor.enrichers.push({ pattern: QUEST_LINK, enricher: async (match) => enrichQuestLink(match) });
+  document.addEventListener("click", onQuestLink, true);
   game.settings.register(MOD, "public", { scope: "world", config: false, type: Object, default: { trackers: [] }, onChange: (v) => {
     questNotices(v);
     refresh();
@@ -4337,8 +4388,28 @@ Hooks.once("ready", async () => {
     open: (tab) => TrackersApp.open(tab),
     /** Open the window on a quest this user can see (another module's link to it, say). */
     openQuest: (id) => openQuest(id),
-    /** The quests this user can see: id, name, status and category. */
-    quests: () => visibleTrackers().filter((t) => t.kind === "quest").map((t) => ({ id: t.id, name: t.name, status: t.status, category: t.category ?? "" })),
+    /** The quests this user can see (the GM: all of them), with what a list needs: id, name, status, its label,
+     * category, objectives done and in all (not counting optional ones), whether players can see it (GM), whether
+     * it's a party quest or the party's focus, and this user's New/Updated mark ("new", "updated" or ""). */
+    quests: () => visibleTrackers().filter((t) => t.kind === "quest").map((t) => {
+      const main = (t.objectives ?? []).filter((o) => !o.optional);
+      return {
+        id: t.id, name: t.name, status: t.status, statusLabel: QSTATUS_LABEL[t.status] ?? "Active", category: t.category ?? "",
+        done: main.filter((o) => o.state === "done").length, total: main.length,
+        revealed: game.user.isGM ? !!t.revealed : true, party: !!t.party, focus: !!t.focus,
+        mark: game.user.isGM ? "" : unseen(t),
+      };
+    }),
+    /** A quest as the players see it, read-only, as HTML styled by this module (no actions; links to other quests
+     * carry data-pct-action="pctQuestGo" and data-qid, loot links data-pct-action="pctOpenActor" and data-uuid).
+     * null when players can't see it. */
+    questHTML: (id) => questReadOnly(id),
+    /** Mark a quest seen by this user (clears its New/Updated mark), as opening it in the window does. */
+    markQuestSeen: (id) => {
+      if (game.user.isGM) return;
+      const q = visibleTrackers().find((t) => t.id === id && t.kind === "quest");
+      if (q) markSeen(q);
+    },
     registerPreset,
     syncPresets,
     get: (id) => clone(Store.get(id)),

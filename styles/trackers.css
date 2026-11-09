@@ -342,3 +342,11 @@
 .pct-app .pct-partytools { display: flex; gap: 6px; margin-left: auto; font-style: normal; }
 .pct-qnew-dialog .pct-dialog-form { display: flex; flex-direction: column; gap: 8px; }
 .pct-qnew-dialog .pct-dialog-form label { display: flex; flex-direction: column; gap: 3px; }
+
+/* A quest drawn read-only inside another module's window (api.questHTML), and @Quest links in journal text. */
+.pct-app.pct-embed { --pct-accent: #b08d4a; --pct-fill: #a63d32; --pct-ok: #4f8a4b; --pct-warn: #c06a2b; --pct-line: rgba(127, 127, 127, 0.35); --pct-soft: rgba(127, 127, 127, 0.12); }
+.pct-app.pct-embed .pct { display: block; height: auto; }
+.pct-app.pct-embed .pct [data-pct-action] { cursor: pointer; }
+a.pct-quest-link { display: inline-flex; align-items: center; gap: 4px; padding: 0 4px; border: 1px solid rgba(127, 127, 127, 0.45); border-radius: 3px; background: rgba(176, 141, 74, 0.12); white-space: nowrap; cursor: pointer; }
+a.pct-quest-link i { color: #b08d4a; }
+a.pct-quest-link.pct-quest-unknown { opacity: 0.6; font-style: italic; }

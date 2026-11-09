@@ -5,6 +5,8 @@
 - The window remembers its size and place, in each browser.
 - `api.open()` can open the window on a tab: `api.open("reputation")`, a tab's label such as `api.open("Victory Points")`, or a tracker's id (its tab, and for a quest that quest). A name it doesn't know opens the window where it was left.
 - Restoring the window from minimized brings it back at its full size (on Foundry 14.370 it came back as a thin strip), including when it's opened while minimized.
+- Quest links in journal text: write `@Quest[id]` (or `@Quest[id]{a label}`) in any journal page and it shows as a link that opens the quest. Drag a quest from the Quests list into a journal page to make one. A player sees a quest they can't open yet as a faded link.
+- For other modules: `api.quests()` now gives each quest's status label, objectives done and in all, whether players can see it, whether it's a party quest or the focus, and the user's New/Updated mark; `api.questHTML(id)` draws a quest read-only as players see it; `api.markQuestSeen(id)` clears its mark; the hook `pf2e-campaign-trackers.changed` fires when trackers or marks change, and `pf2e-campaign-trackers.questLink` lets a module show a clicked quest link itself (Bayard's Campaign Journal uses these for its Quests tab).
 - Verified on Foundry 14.370.
 
 ## 2.2.0
