@@ -327,5 +327,7 @@
 
 /* Party quests */
 .pct-app .pct-partyline { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; }
+.pct-app .pct-partyline:has(.pct-partytools) { flex-wrap: wrap; }
+.pct-app .pct-partytools { display: flex; gap: 6px; margin-left: auto; font-style: normal; }
 .pct-qnew-dialog .pct-dialog-form { display: flex; flex-direction: column; gap: 8px; }
 .pct-qnew-dialog .pct-dialog-form label { display: flex; flex-direction: column; gap: 3px; }

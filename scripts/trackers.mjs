@@ -45,7 +45,20 @@ const uid = () => foundry.utils.randomID(10).toLowerCase();
 const clone = (x) => (x === undefined ? undefined : JSON.parse(JSON.stringify(x)));
 const num = (v, d = 0) => (Number.isFinite(Number(v)) && v !== "" && v !== null ? Number(v) : d);
 const signed = (n) => (n > 0 ? `+${n}` : `${n}`);
-const isPrimaryGM = () => game.user.isGM && game.users.activeGM?.id === game.user.id;
+/* Foundry's active GM is a user, not a browser tab, so the same GM in two tabs would answer every request twice.
+ * Each GM tab gets an id and tells the others about itself; only the tab with the lowest id among the active GM's
+ * live tabs acts. */
+const CLIENT_ID = globalThis.foundry?.utils?.randomID?.(16) ?? Math.random().toString(36).slice(2, 18);
+const gmTabs = new Map();
+function leadTab() {
+  const now = Date.now();
+  for (const [id, seen] of gmTabs) if (now - seen > 45000) gmTabs.delete(id);
+  return [...gmTabs.keys()].every((id) => CLIENT_ID < id);
+}
+const isPrimaryGM = () => game.user.isGM && game.users.activeGM?.id === game.user.id && leadTab();
+function announceTab(hello = false) {
+  if (game.user.isGM) game.socket.emit(SOCKET, { type: "gmtab", client: CLIENT_ID, hello });
+}
 
 /* ------------------------------------------------------------------ */
 /* Templates for every list in every tracker                           */
@@ -566,6 +579,7 @@ function questNotices(pub) {
       if (!q.party) lines.push(`New quest: ${q.name}`);
       else if (q.party.by !== game.user.id) lines.push(`New quest from ${q.party.name || "the party"}: ${q.name}`);
     } else if (old.status !== q.status && (q.status === "completed" || q.status === "failed")) lines.push(`Quest ${q.status}: ${q.name}`);
+    else if (old.party && !q.party) lines.push(`The GM took over ${q.name}`);
     else if (questHash(old) !== questHash(q) && q.party) {
       // The party edits its own quests a lot: an Updated mark, no notice; nothing at all for this player's own edit.
       const mine = Date.now() - (ownEdits.get(id) ?? 0) < 15000 || onlyOwnTicks(old, q);
@@ -610,6 +624,15 @@ const partyRate = new Map();
 async function onSocket(msg, senderId) {
   if (!msg?.type) return;
   const sender = game.users.get(senderId);
+  if (msg.type === "gmtab" || msg.type === "gmbye") {
+    if (!game.user.isGM || sender?.id !== game.user.id || typeof msg.client !== "string") return;
+    if (msg.type === "gmbye") gmTabs.delete(msg.client);
+    else {
+      gmTabs.set(msg.client, Date.now());
+      if (msg.hello) announceTab(false);
+    }
+    return;
+  }
   // The GM's client answers a player: a request it couldn't record, or the quest it made for them.
   if (msg.type === "qfail" || msg.type === "qmade") {
     if (!sender?.isGM || msg.to !== game.user.id) return;
@@ -2521,7 +2544,10 @@ function questParty(t, open) {
 function partyLine(t, gm) {
   if (!t.party) return "";
   const by = t.party.by === game.user.id ? "you" : t.party.name || "a player";
-  return `<p class="pct-hint pct-partyline"><i class="fa-solid fa-users"></i> A party quest, made by ${esc(by)}. ${gm ? "Players can edit it." : "Anyone in the party can edit it."}</p>`;
+  const tools = gm
+    ? `<span class="pct-partytools">${t.category !== "Main" ? A("pctQMain", "fa-solid fa-flag", { label: "Make it a main quest", tip: "Set its category to Main. It stays a party quest." }) : ""}${A("pctQTake", "fa-solid fa-hand", { label: "Take it over", tip: "Make it your quest: you can add hidden parts and GM notes, and players go back to ticking and notes" })}</span>`
+    : "";
+  return `<p class="pct-hint pct-partyline"><i class="fa-solid fa-users"></i> <span>A party quest, made by ${esc(by)}. ${gm ? "Players can edit it." : "Anyone in the party can edit it."}</span>${tools}</p>`;
 }
 
 /** The GM's quest, with the details and GM notes editable in place too. */
@@ -3373,6 +3399,8 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
       pctQPin: TrackersApp.#onQPin,
       pctPanelOn: TrackersApp.#onPanelOn,
       pctQNew: TrackersApp.#onQNew,
+      pctQMain: TrackersApp.#onQMain,
+      pctQTake: TrackersApp.#onQTake,
       pctQDel: TrackersApp.#onQDel,
       pctQClear: TrackersApp.#onQClear,
       pctQImg: TrackersApp.#onQImg,
@@ -3692,6 +3720,28 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     });
     if (!data || typeof data !== "object" || !data.name) return;
     sendToGM({ type: "qnew", name: data.name, desc: data.desc });
+  }
+
+  static async #onQMain(event, target) {
+    const t = this.trackerFor(target);
+    if (!this.isGM || !t?.party) return;
+    await mutateTracker(t.id, (tr) => {
+      tr.category = "Main";
+    }, { notify: false });
+  }
+
+  /** The GM takes a party quest over: it becomes an ordinary quest of theirs, everything in it kept. */
+  static async #onQTake(event, target) {
+    const t = this.trackerFor(target);
+    if (!this.isGM || !t?.party) return;
+    const ok = await foundry.applications.api.DialogV2.confirm({
+      window: { title: "Take it over" },
+      content: `<p>Make <strong>${esc(t.name)}</strong> your quest? Everything in it stays, and players still see it, but they can only tick objectives and add notes from now on. This can't be undone from the window.</p>`,
+    });
+    if (!ok) return;
+    await mutateTracker(t.id, (tr) => {
+      tr.party = null;
+    }, { notify: false });
   }
 
   static async #onQDel(event, target) {
@@ -4084,6 +4134,11 @@ Hooks.once("init", () => {
 
 Hooks.once("ready", () => {
   game.socket.on(SOCKET, onSocket);
+  if (game.user.isGM) {
+    announceTab(true);
+    setInterval(() => announceTab(false), 15000);
+    window.addEventListener("beforeunload", () => game.socket.emit(SOCKET, { type: "gmbye", client: CLIENT_ID }));
+  }
   // Players start from what is already shared, so only later changes bring notices.
   if (!game.user.isGM) lastQuests = questsOf(game.settings.get(MOD, "public"));
 });
