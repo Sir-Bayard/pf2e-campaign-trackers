@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- The quest panel has its own close button. It hides the panel for you until you choose Show the quest panel on the Quests tab (or turn the setting back on).
+- For other modules: `api.openQuest(id)` opens the window on a quest, and `api.quests()` lists the quests the user can see.
+
 ## 2.0.0
 
 - New Quests tab: a quest log with a list grouped by status (Lead, Active, Completed, Failed) beside the chosen quest. Completed quests show green and failed ones red. Categories are yours to name (Main and Side to start).

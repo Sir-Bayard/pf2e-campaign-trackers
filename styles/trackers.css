@@ -321,3 +321,6 @@
 .pct-qpanel .pct-qp-box.pct-busy { opacity: 0.4; pointer-events: none; }
 .pct-qpanel .pct-qp-chip { flex: none; font-size: 10px; padding: 0 5px; border: 1px solid rgba(127, 127, 127, 0.5); border-radius: 8px; white-space: nowrap; }
 .pct-qpanel .pct-qp-none { margin: 2px 0 0 18px; font-size: 12px; opacity: 0.7; font-style: italic; }
+
+/* The quest panel hidden: the way back, on the Quests tab */
+.pct-app .pct-panel-off { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; }

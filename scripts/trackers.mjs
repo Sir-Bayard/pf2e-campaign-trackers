@@ -2995,7 +2995,7 @@ function renderPanel() {
   const folded = new Set(Array.isArray(st.folded) ? st.folded : []);
   const pins = pinned();
   panelEl.classList.toggle("pct-qp-min", !!st.min);
-  panelEl.innerHTML = `<header class="pct-qp-head" data-tooltip="Drag to move"><i class="fa-solid fa-scroll"></i><span>Quests</span>${qpBtn("min", st.min ? "fa-solid fa-chevron-down" : "fa-solid fa-chevron-up", st.min ? "Show the panel" : "Shrink the panel")}</header>
+  panelEl.innerHTML = `<header class="pct-qp-head" data-tooltip="Drag to move"><i class="fa-solid fa-scroll"></i><span>Quests</span>${qpBtn("min", st.min ? "fa-solid fa-chevron-down" : "fa-solid fa-chevron-up", st.min ? "Show the panel" : "Shrink the panel")}${qpBtn("close", "fa-solid fa-xmark", "Hide the quest panel")}</header>
     ${st.min ? "" : `<div class="pct-qp-body">${list.map((q) => panelQuest(q, folded, pins)).join("")}</div>`}`;
   placePanel();
 }
@@ -3055,6 +3055,9 @@ async function onPanelClick(ev) {
   if (qp === "min") {
     writeJSON(PANEL_KEY, { ...st, min: !st.min });
     renderPanel();
+  } else if (qp === "close") {
+    await game.settings.set(MOD, "questPanel", false);
+    ui.notifications.info("Quest panel hidden. Show the quest panel on the Quests tab brings it back.");
   } else if (qp === "fold") {
     const folded = new Set(Array.isArray(st.folded) ? st.folded : []);
     folded.has(tid) ? folded.delete(tid) : folded.add(tid);
@@ -3138,6 +3141,7 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
       pctQState: { handler: TrackersApp.#onQState, buttons: [0, 2] },
       pctQFocus: TrackersApp.#onQFocus,
       pctQPin: TrackersApp.#onQPin,
+      pctPanelOn: TrackersApp.#onPanelOn,
       pctQClear: TrackersApp.#onQClear,
       pctQImg: TrackersApp.#onQImg,
       pctOpenActor: TrackersApp.#onOpenActor,
@@ -3201,7 +3205,11 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     const info = KIND_INFO[kind];
     const head = `<header class="pct-tab-head"><div><h2><i class="${info.icon}"></i> ${esc(info.tab)}</h2>${this.isGM ? `<p class="pct-hint">${esc(info.blurb)}</p>` : ""}</div>
         ${this.isGM ? A("pctNew", "fa-solid fa-plus", { label: `New ${info.label.toLowerCase()}`, data: { kind }, cls: "pct-new" }) : ""}</header>`;
-    if (kind === "quest") return head + this.#quests(list);
+    if (kind === "quest") {
+      // Brought back here after the panel's own close button hid it.
+      const panelOff = !game.settings.get(MOD, "questPanel") ? `<p class="pct-hint pct-panel-off">The quest panel is hidden for you. ${A("pctPanelOn", "fa-solid fa-scroll", { label: "Show the quest panel" })}</p>` : "";
+      return head + panelOff + this.#quests(list);
+    }
     const cards = list.map((t) => this.#card(t)).join("") || `<p class="pct-hint">${this.isGM ? "None yet." : "Nothing here yet."}</p>`;
     return head + cards;
   }
@@ -3427,6 +3435,10 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     await mutateTracker(t.id, (tr) => {
       tr.focus = !tr.focus;
     }, { notify: false });
+  }
+
+  static async #onPanelOn() {
+    await game.settings.set(MOD, "questPanel", true);
   }
 
   static #onQPin(event, target) {
@@ -3770,7 +3782,10 @@ Hooks.once("init", () => {
   game.settings.register(MOD, "questPanel", {
     name: "Show the quest panel",
     hint: "A small panel with the party's focus and the quests you pinned, and their open objectives. Just for you.",
-    scope: "client", config: true, type: Boolean, default: true, onChange: () => renderPanel(),
+    scope: "client", config: true, type: Boolean, default: true, onChange: () => {
+      renderPanel();
+      refresh();
+    },
   });
   game.settings.register(MOD, "questSound", {
     name: "Quest notice sound",
@@ -3806,6 +3821,10 @@ Hooks.once("ready", () => {
 Hooks.once("ready", async () => {
   const api = {
     open: () => TrackersApp.open(),
+    /** Open the window on a quest this user can see (another module's link to it, say). */
+    openQuest: (id) => openQuest(id),
+    /** The quests this user can see: id, name, status and category. */
+    quests: () => visibleTrackers().filter((t) => t.kind === "quest").map((t) => ({ id: t.id, name: t.name, status: t.status, category: t.category ?? "" })),
     registerPreset,
     syncPresets,
     get: (id) => clone(Store.get(id)),
