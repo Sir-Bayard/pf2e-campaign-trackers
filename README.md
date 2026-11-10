@@ -252,6 +252,8 @@ A party quest is yours to edit too, and you can add hidden parts and GM notes th
 
 Clicking the button lists what it will reveal, all ticked: the quest if players can't see it yet, each hidden part, the objective a step sits under, the quest a lead points to, and loot players can't open yet. Untick anything to keep it hidden, then **Reveal**. A step always brings the objective it sits under, as it does with the eye, since players see nothing of a step under a hidden objective. Shift-click reveals everything on that list at once, as Shift skips the dialog when you roll. Either way it's one change, so players get one notice. Pointing at the button lists what it covers, with a tick on what players already see; it fades with a check once they see it all, and shows a dashed red border when something it names was deleted. Players see only the label, as plain text, with no hint of what's behind it; a link made by dragging is labeled with the part's text (or the quest's name), so change the label in a page players can read. A reveal link in chat, or in a page a player changed last, always shows the list, even with Shift.
 
+<img src="docs/images/reveal-link.png" alt="A prep page with two reveal links, one already revealed, and the list a click opens" width="600">
+
 **In Bayard's Campaign Journal.** With [Bayard's Campaign Journal](https://github.com/Sir-Bayard/bayards-campaign-journal) installed, its Quests tab lists the quests and shows each one as the players see it, and quest links clicked there open the quest on that tab.
 
 ## Reminders
