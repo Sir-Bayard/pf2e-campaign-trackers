@@ -371,6 +371,7 @@ a.pct-reveal-link i { color: #5a8cc8; }
 a.pct-reveal-link.pct-done { opacity: 0.55; }
 a.pct-reveal-link.pct-done i { color: #3c8a4f; }
 a.pct-reveal-link.pct-broken { border-style: dashed; border-color: #b04a3c; }
+a.pct-reveal-link.pct-drop-on { outline: 2px solid #5a8cc8; outline-offset: 1px; opacity: 1; }
 .pct-reveal-dialog .pct-rl-rows { display: flex; flex-direction: column; gap: 3px; margin: 4px 0 8px; }
 .pct-reveal-dialog .pct-chk { display: flex; gap: 6px; align-items: flex-start; }
 .pct-reveal-dialog .pct-chk.pct-indent { margin-left: 22px; }

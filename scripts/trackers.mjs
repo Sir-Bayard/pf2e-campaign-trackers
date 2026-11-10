@@ -491,6 +491,29 @@ function applyQuestNote(t, op, { id = null, by, name = "", text = "", isGM = fal
 }
 
 const ROW_KIND = { objectives: "Objective", "objectives.steps": "Step", entries: "Journal", leads: "Lead", rewards: "Reward" };
+/** Reveal a found row (findRow's result). A step brings the objective it sits under, since players see nothing of a
+ * step under a hidden objective. Returns the lists of what it revealed. */
+function revealRow(f) {
+  const out = [];
+  if (!f?.row) return out;
+  if (!f.row.revealed) {
+    f.row.revealed = true;
+    out.push(f.list);
+  }
+  if (f.list === "objectives.steps" && f.parent && !f.parent.revealed) {
+    f.parent.revealed = true;
+    out.push("objectives");
+  }
+  return out;
+}
+/** Does a found row show to players? A step only with its objective. */
+const rowShown = (f) => !!f?.row?.revealed && (f.list !== "objectives.steps" || !!f.parent?.revealed);
+/** "Step: Get disguises", plus ", and the objective it sits under" when revealing it would bring its objective too. */
+function revealLabel(t, f) {
+  const base = rowLabel(t, f.row.id);
+  return f.list === "objectives.steps" && f.parent && !f.parent.revealed ? `${base}, and the objective it sits under (${shortText(f.parent.text, 50) || "no text"})` : base;
+}
+
 /** A row of a quest named for the GM: "Step: Get disguises". */
 function rowLabel(t, id) {
   const f = findRow(t, id);
@@ -507,7 +530,7 @@ function completionOffers(t, goalId) {
   if (!found) return { reveal: [], parent: null };
   const reveal = (found.g.onDone ?? []).filter((id) => {
     const f = findRow(t, id);
-    return f && f.row.revealed === false;
+    return f && !rowShown(f);
   });
   const parent = found.parent && found.parent.state === "open" && stepProgress(found.parent).complete ? found.parent.id : null;
   return { reveal, parent };
@@ -2067,8 +2090,8 @@ async function renderCompletion(message, qp, root) {
   }
   for (const id of qp.reveal) {
     const f = findRow(t, id);
-    if (!f || f.row.revealed) continue;
-    rows.push(`<label class="pct-chk"><input type="checkbox" name="reveal" value="${esc(id)}" checked> <span>Reveal ${esc(rowLabel(t, id))}</span></label>`);
+    if (!f || rowShown(f)) continue;
+    rows.push(`<label class="pct-chk"><input type="checkbox" name="reveal" value="${esc(id)}" checked> <span>Reveal ${esc(revealLabel(t, f))}</span></label>`);
     if (f.list === "leads") {
       const to = Store.data.trackers.find((x) => x.id === f.row.to && x.kind === "quest" && !x.revealed);
       if (to) rows.push(`<label class="pct-chk pct-indent"><input type="checkbox" name="leadq" value="${esc(to.id)}" data-for="${esc(id)}" checked> <span>and reveal the quest it points to, ${esc(to.name)}</span></label>`);
@@ -2088,6 +2111,7 @@ async function renderCompletion(message, qp, root) {
     const loot = under("loot"), leadq = under("leadq"), doParent = !!box.querySelector('input[name="parent"]:checked'), doSelf = !!box.querySelector('input[name="self"]:checked');
     onceFor(message, async (m) => {
       if (m.getFlag(SCOPE, "qprompt")?.status !== "open") return;
+      let revealedN = 0;
       const done = await mutate((d) => {
         const tr = d.trackers.find((x) => x.id === qp.tid);
         if (!tr) return undefined;
@@ -2102,10 +2126,7 @@ async function renderCompletion(message, qp, root) {
             sg.doneBy = "gm";
           }
         }
-        for (const id of ids) {
-          const f = findRow(tr, id);
-          if (f) f.row.revealed = true;
-        }
+        for (const id of ids) revealedN += revealRow(findRow(tr, id)).length;
         if (doParent) {
           const pg = findGoal(tr, qp.parent)?.g;
           if (pg && pg.state === "open") {
@@ -2120,7 +2141,7 @@ async function renderCompletion(message, qp, root) {
         const r = (Store.get(qp.tid)?.rewards ?? []).find((x) => x.id === rid);
         if (r?.actor?.uuid) await letPlayersOpen(r.actor.uuid);
       }
-      const parts = [doSelf && "marked it done", ids.length && `revealed ${ids.length}`, leadq.length && `revealed ${leadq.length === 1 ? "a quest" : `${leadq.length} quests`}`, doParent && "marked the objective done", loot.length && "opened the loot to players"].filter(Boolean);
+      const parts = [doSelf && "marked it done", revealedN && `revealed ${revealedN}`, leadq.length && `revealed ${leadq.length === 1 ? "a quest" : `${leadq.length} quests`}`, doParent && "marked the objective done", loot.length && "opened the loot to players"].filter(Boolean);
       await m.update({ [`flags.${SCOPE}.qprompt.status`]: "done", [`flags.${SCOPE}.qprompt.result`]: parts.length ? `Done: ${parts.join(", ")}.` : "Done." });
       // Marking it done can complete the objective above it, or bring more to reveal.
       if (doSelf) await promptCompletion(Store.get(qp.tid), qp.self);
@@ -2909,7 +2930,7 @@ const QEDIT_PARTY = {
 
 const EDIT = {
   quest: (t) => `${QEDIT.meta(t)}
-      <div class="pct-sub">Objectives. Players see each one when you reveal it; steps are revealed on their own too.</div>${QEDIT.objectives(t)}
+      <div class="pct-sub">Objectives. Players see each one when you reveal it; steps are revealed on their own, and revealing one shows its objective too.</div>${QEDIT.objectives(t)}
       <div class="pct-sub">Journal: what happened, newest shown first. Players see each entry when you reveal it.</div>${QEDIT.entries(t)}
       <div class="pct-sub">Leads: where to go next. A lead can point to another quest.</div>${QEDIT.leads(t)}
       <div class="pct-sub">Rewards. Drop a loot actor on a reward for treasure.</div>${QEDIT.rewards(t)}`,
@@ -3457,7 +3478,7 @@ function resolveReveal(questRef, partList) {
 }
 
 /** Is everything a link names shown to players? A step counts as shown only with its objective. */
-const partShown = (p) => !!p.row.revealed && (p.list !== "objectives.steps" || !!p.parent?.revealed);
+const partShown = (p) => rowShown(p);
 
 /** What a click would reveal, as the checklist's rows (all ticked to start): the quest if hidden, each hidden part,
  * the objective a step sits under, the hidden quest a lead points to, and loot players can't open yet. */
@@ -3465,15 +3486,14 @@ async function revealPlan({ q, parts, questOnly = false }) {
   const rows = [], already = [];
   // M1: a link whose parts are all gone mustn't reveal the quest on its own.
   if (!q.revealed && (questOnly || parts.length)) rows.push({ name: "quest", value: q.id, label: parts.length ? "The quest itself (players see none of it yet)" : "The quest itself" });
-  const named = new Set(parts.map((p) => p.id));
   const leadqs = new Set();
   for (const p of parts) {
-    if (p.row.revealed) already.push(p);
-    else rows.push({ name: "row", value: p.id, label: rowLabel(q, p.id) });
-    if (p.list === "objectives.steps" && !p.parent.revealed && !named.has(p.parent.id)) {
-      named.add(p.parent.id);
-      rows.push({ name: "row", value: p.parent.id, label: `and the objective it sits under, ${shortText(p.parent.text, 60) || "(no text)"}`, indent: true });
+    if (rowShown(p)) {
+      already.push(p);
+      continue;
     }
+    // A step's row reveals its objective too (the same rule as the eye).
+    rows.push({ name: "row", value: p.id, label: revealLabel(q, p) });
     if (p.row.revealed) continue;
     if (p.list === "leads") {
       const to = Store.data.trackers.find((x) => x.id === p.row.to && x.kind === "quest" && !x.revealed && x.id !== q.id);
@@ -3493,7 +3513,7 @@ async function revealPlan({ q, parts, questOnly = false }) {
 /** The checklist a reveal link opens: untick anything to leave hidden. Null when the GM cancels. */
 async function chooseReveal(r, plan) {
   const row = (x) => `<label class="pct-chk ${x.indent ? "pct-indent" : ""}"><input type="checkbox" name="${x.name}" value="${esc(x.value)}" ${x.for ? `data-for="${esc(x.for)}"` : ""} checked> <span>${esc(x.label)}</span></label>`;
-  const shown = plan.already.map((p) => `<div class="pct-rl-note"><i class="fa-solid fa-check"></i> <span>${esc(rowLabel(r.q, p.id))}</span> <em>${partShown(p) ? "players see it" : "shown once its objective is"}</em></div>`).join("");
+  const shown = plan.already.map((p) => `<div class="pct-rl-note"><i class="fa-solid fa-check"></i> <span>${esc(rowLabel(r.q, p.id))}</span> <em>players see it</em></div>`).join("");
   const missing = r.missing.map((id) => `<div class="pct-rl-note pct-rl-missing"><i class="fa-solid fa-xmark"></i> <span>Not found: ${esc(id)}</span></div>`).join("");
   const res = await foundry.applications.api.DialogV2.wait({
     window: { title: `Reveal: ${r.q.name}` },
@@ -3525,7 +3545,7 @@ async function applyReveal(qid, choice) {
   const cur = Store.get(qid);
   if (cur?.kind !== "quest") return void ui.notifications.warn("That quest no longer exists.");
   const hidden = (choice.quest && !cur.revealed)
-    || choice.rows.some((id) => findRow(cur, id)?.row.revealed === false)
+    || choice.rows.some((id) => { const f = findRow(cur, id); return !!f && !rowShown(f); })
     || choice.leadq.some((id) => Store.get(id)?.revealed === false);
   const res = !hidden ? { name: cur.name, quest: false, kinds: {}, quests: [] } : await mutate((d) => {
     const tr = d.trackers.find((x) => x.id === qid && x.kind === "quest");
@@ -3534,9 +3554,8 @@ async function applyReveal(qid, choice) {
     if (choice.quest && !tr.revealed) out.quest = tr.revealed = true;
     for (const id of choice.rows) {
       const f = findRow(tr, id);
-      if (!f || !ROW_KIND[f.list] || f.row.revealed) continue;
-      f.row.revealed = true;
-      out.kinds[f.list] = (out.kinds[f.list] ?? 0) + 1;
+      if (!f || !ROW_KIND[f.list]) continue;
+      for (const list of revealRow(f)) out.kinds[list] = (out.kinds[list] ?? 0) + 1;
     }
     for (const id of choice.leadq) {
       const o = d.trackers.find((x) => x.id === id && x.kind === "quest");
@@ -3623,6 +3642,9 @@ function enrichRevealLink(match, options = {}) {
   a.dataset.parts = parts;
   a.dataset.label = text;
   if (!gmWrote(options?.relativeTo)) a.dataset.ask = "always";
+  // In a journal page the GM can drop more parts onto it.
+  const doc = options?.relativeTo;
+  if (doc?.documentName === "JournalEntryPage" && !doc.pack && a.dataset.ask !== "always") a.dataset.page = doc.uuid;
   paintRevealLink(a);
   return a;
 }
@@ -3647,6 +3669,7 @@ function paintRevealLink(a) {
     }
     for (const id of r.missing) lines.push(`✗ Not found: ${esc(id)}`);
     done = !!r.q.revealed && !broken && r.parts.every(partShown);
+    if (a.dataset.page) lines.push("Drop more parts of this quest on it to add them.");
     const how = a.dataset.ask === "always" ? "Click to choose what to reveal. (Written where a player could have written it, so it always asks.)" : "Click to choose what to reveal. Shift-click to reveal it all.";
     lines.push(`<em>${done ? "Players see all of this." : how}</em>`);
   }
@@ -3662,6 +3685,118 @@ function paintRevealLink(a) {
   icon.className = done ? "fa-solid fa-check" : "fa-solid fa-eye";
   a.replaceChildren(icon, document.createTextNode(a.dataset.label || "Reveal"));
 }
+/** The parts a link gets: the ones it has, then the new ones in the quest's order. Null when nothing is new. */
+function partsWithMore(t, have, add) {
+  const order = revealableIds(t);
+  const fresh = [...new Set(add)].filter((id) => !have.includes(id) && order.includes(id) && !RL_BAD.test(String(id)))
+    .sort((x, y) => order.indexOf(x) - order.indexOf(y));
+  return fresh.length ? { parts: [...have, ...fresh], added: fresh } : null;
+}
+/** Is this match (of REVEAL_LINK) the link `a` was drawn from? Compared the way the enricher reads it. */
+function sameLink(m, a) {
+  const label = String(m[3] ?? "").trim() || "Reveal";
+  return m[1].trim() === a.dataset.quest && splitIds(m[2]).join(",") === splitIds(a.dataset.parts).join(",") && label === a.dataset.label;
+}
+/** In plain text (a text node, or a Markdown source), give every copy of link `a` these parts. Each copy keeps its own
+ * quest ref and label as written, and a link with no label stays without one. */
+function rewriteLinks(text, a, parts) {
+  let count = 0;
+  const out = String(text).replace(new RegExp(REVEAL_LINK.source, "g"), (...g) => {
+    if (!sameLink(g, a)) return g[0];
+    count++;
+    return `@QuestReveal[${g[1]}|${parts.join(",")}]${g[3] === undefined ? "" : `{${g[3]}}`}`;
+  });
+  return { text: out, count };
+}
+/** The same in stored HTML: rewrite inside text nodes, as the enricher reads them (entities, nbsp and quoting don't
+ * matter). Null when no copy was found. */
+function rewriteLinksInHTML(html, a, parts) {
+  const tpl = document.createElement("template");
+  tpl.innerHTML = html;
+  const walker = document.createTreeWalker(tpl.content, NodeFilter.SHOW_TEXT);
+  let count = 0;
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (!n.nodeValue.includes("@QuestReveal[")) continue;
+    const r = rewriteLinks(n.nodeValue, a, parts);
+    if (r.count) {
+      n.nodeValue = r.text;
+      count += r.count;
+    }
+  }
+  return count ? { text: tpl.innerHTML, count } : null;
+}
+const splitIds = (x) => String(x ?? "").split(",").map((v) => v.trim()).filter(Boolean);
+/** Pages being written to by a drop, so a second drop waits for the first. */
+const dropBusy = new Set();
+/** Parts dropped on a reveal link in a journal page: add them to the link in the page's text. */
+async function addToRevealLink(a, droppedQuest, droppedParts) {
+  if (!game.user.isGM) return;
+  // M2: a link a player may have written isn't changed by a drop (the change would make the page the GM's).
+  if (a.dataset.ask === "always") return void ui.notifications.warn("This link may have been written by a player. Edit the page to change it.");
+  const t = revealQuest(a.dataset.quest);
+  if (!t) return void ui.notifications.warn("This reveal link's quest can't be found.");
+  if (revealQuest(droppedQuest)?.id !== t.id) return void ui.notifications.warn("That's from another quest. A reveal link covers one quest.");
+  const add = splitIds(droppedParts);
+  if (!add.length) return void ui.notifications.info("Drop a part's link icon here (or a picked set) to add it.");
+  const next = partsWithMore(t, splitIds(a.dataset.parts), add);
+  if (!next) return void ui.notifications.info("This reveal link already covers that.");
+  if (next.parts.join(",").length > 1000) return void ui.notifications.warn("That would make the link too long. Make a second reveal link for the rest.");
+  const page = await fromUuid(a.dataset.page);
+  if (!page?.isOwner || page.pack) return void ui.notifications.warn("You can't change that page here.");
+  if (dropBusy.has(page.uuid)) return void ui.notifications.info("Still saving the last drop on this page. Try again in a moment.");
+  dropBusy.add(page.uuid);
+  try {
+    const changes = {};
+    let count = 0;
+    const html = rewriteLinksInHTML(page.text?.content ?? "", a, next.parts);
+    // M1: a Markdown page keeps its source in text.markdown and its HTML in text.content; both must change.
+    const md = page.text?.format === CONST.JOURNAL_ENTRY_PAGE_FORMATS?.MARKDOWN;
+    if (md) {
+      const r = rewriteLinks(page.text?.markdown ?? "", a, next.parts);
+      if (!r.count || (page.text?.content && !html)) return void ui.notifications.warn("Couldn't find this link in the page's text. Edit the page to add the parts by hand.");
+      changes["text.markdown"] = r.text;
+      if (html) changes["text.content"] = html.text;
+      count = r.count;
+    } else {
+      if (!html) return void ui.notifications.warn("Couldn't find this link in the page's text. Edit the page to add the parts by hand.");
+      changes["text.content"] = html.text;
+      count = html.count;
+    }
+    await page.update(changes);
+    const what = next.added.map((id) => rowLabel(t, id)).join("; ").replace(/[.!?]+$/, "");
+    ui.notifications.info(esc(`Added to the reveal link${count > 1 ? ` (all ${count} copies in the page)` : ""}: ${what}.`));
+  } catch (err) {
+    console.warn(`${MOD} | couldn't add to a reveal link`, err);
+    ui.notifications.warn("Couldn't change the page. Edit it to add the parts by hand.");
+  } finally {
+    dropBusy.delete(page.uuid);
+  }
+}
+const dropLink = (ev) => (game.user.isGM ? ev.target.closest?.("a.pct-reveal-link[data-page]") : null);
+function onRevealDragOver(ev) {
+  const a = dropLink(ev);
+  if (!a || !ev.dataTransfer?.types?.includes("text/plain")) return;
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = "copy";
+  a.classList.add("pct-drop-on");
+}
+function onRevealDragLeave(ev) {
+  const a = ev.target.closest?.("a.pct-reveal-link");
+  // Moving onto the icon inside the link isn't leaving it.
+  if (a && !a.contains(ev.relatedTarget)) a.classList.remove("pct-drop-on");
+}
+function onRevealDrop(ev) {
+  const a = dropLink(ev);
+  if (!a) return;
+  a.classList.remove("pct-drop-on");
+  const m = [...String(ev.dataTransfer?.getData("text/plain") ?? "").matchAll(REVEAL_LINK)][0];
+  // Anything else dropped here goes on to Foundry as usual.
+  if (!m) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  addToRevealLink(a, m[1].trim(), m[2] ?? "").catch((err) => console.warn(`${MOD} | reveal link drop`, err));
+}
+
 /** A reveal link was clicked (GM only: players get plain text). Shift reveals at once, as Shift skips a roll's
  * dialog. */
 function onRevealLink(ev) {
@@ -4493,7 +4628,11 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     const path = target.dataset.path;
     const now = await mutateTracker(id, (t) => {
       foundry.utils.setProperty(t, path, !foundry.utils.getProperty(t, path));
-      return foundry.utils.getProperty(t, path) ? "on" : "off";
+      const on = !!foundry.utils.getProperty(t, path);
+      // A step shown under a hidden objective shows nothing: the objective comes too.
+      const sm = on && t.kind === "quest" && path.match(/^objectives\.(\d+)\.steps\.\d+\.revealed$/);
+      if (sm && t.objectives?.[Number(sm[1])]) t.objectives[Number(sm[1])].revealed = true;
+      return on ? "on" : "off";
     }, { notify: false });
     const lm = path.match(/^leads\.(\d+)\.revealed$/);
     if (now === "on" && lm) {
@@ -4730,6 +4869,9 @@ Hooks.once("init", () => {
   CONFIG.TextEditor.enrichers.push({ pattern: REVEAL_LINK, enricher: async (match, options) => enrichRevealLink(match, options) });
   document.addEventListener("click", onQuestLink, true);
   document.addEventListener("click", onRevealLink, true);
+  document.addEventListener("dragover", onRevealDragOver, true);
+  document.addEventListener("dragleave", onRevealDragLeave, true);
+  document.addEventListener("drop", onRevealDrop, true);
   game.settings.register(MOD, "public", { scope: "world", config: false, type: Object, default: { trackers: [] }, onChange: (v) => {
     questNotices(v);
     refresh();

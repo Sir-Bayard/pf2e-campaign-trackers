@@ -2,9 +2,10 @@
 
 ## 2.4.0
 
-- Reveal links for your prep notes: a button in a journal page that reveals parts of a quest when the moment comes. Drag an objective, step, journal entry, lead or reward from your view of the quest into a page, or click its link icon to copy the link. For one button that reveals several parts, click the link icon in the quest's header, tick the parts, and drag or copy the link.
+- Reveal links for your prep notes: a button in a journal page that reveals parts of a quest when the moment comes. Drag an objective, step, journal entry, lead or reward from your view of the quest into a page, or click its link icon to copy the link. For one button that reveals several parts, click the link icon in the quest's header, tick the parts, and drag or copy the link. To add parts to a link later, drop them on its button while reading the page.
 - Clicking the button lists what it will reveal, all ticked: the quest if players can't see it yet, the objective a step sits under, the quest a lead points to, and loot to open. Untick anything to keep it hidden. Shift-click reveals it all without the list, as Shift skips the dialog when you roll. Either way it's one change, with one notice for players.
 - Pointing at the button lists what it covers. It fades once players see it all, keeps up with reveals made anywhere else, and shows a dashed border when something it names is gone. Players see only its label, as plain text. A link in chat, or in a page a player changed last, always shows the list.
+- Revealing a step now reveals the objective it sits under too, with the eye, from the completion card or from a reveal link, since players see nothing of a step under a hidden objective. The completion card says when it will.
 - For macros: `api.revealLink(questId, partIds, label)` gives a reveal link's text, and `api.revealParts(questId, partIds, { ask })` reveals as a reveal link does.
 
 ## 2.3.0
