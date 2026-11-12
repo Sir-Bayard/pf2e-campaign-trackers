@@ -1,6 +1,6 @@
 # PF2e Campaign Trackers
 
-A quest log, GM Core's subsystems and a few table-neutral trackers in one window: Quests, Reputation, Pressure, Victory Points, Skill Challenges, Influence, Research, Chases, Infiltration, Clocks and Checklists. Everything is hidden from players until the GM reveals it. Quests have objectives with steps, leads between quests and reveals prepared for when something is done; players can tick objectives, add notes and start party quests of their own, and a panel keeps the party's quests on screen. Checks roll through the PF2e system and the GM applies the result from the roll card. In a skill challenge, players can propose their own approach and the GM approves it with a DC on the spot. Dates on clocks, checklists and quests send the GM a whisper when the calendar reaches them. Other modules can ship campaign content as a preset.
+A quest log, GM Core's subsystems and a few table-neutral trackers in one window: Quests, Reputation, Pressure, Victory Points, Skill Challenges, Influence, Research, Chases, Infiltration, Clocks and Checklists. Everything is hidden from players until the GM reveals it. Quests have objectives with steps, leads between quests and reveals prepared for when something is done; players can tick objectives, add notes and start party quests of their own, and a panel keeps the party's quests on screen. Checks roll through the PF2e system and the GM applies the result from the roll card. In a skill challenge, or in ordinary play from a hotbar macro, players can propose a check and the GM approves it with a DC on the spot. Dates on clocks, checklists and quests send the GM a whisper when the calendar reaches them. Other modules can ship campaign content as a preset.
 
 ## What it looks like
 
@@ -189,6 +189,16 @@ The DC on a proposal or a check starts from an approach that uses the same skill
 
 The DC filled in on a proposal or a check comes from a revealed approach that uses the same skill and isn't used up. Hidden approaches are never picked for you: choose one under "Counts as" when that's what the player has stumbled on.
 
+### Proposals outside a challenge
+
+The same proposal works in ordinary play, when a player wants to try their Engineering Lore on something and there's no challenge running. Make a Script macro with this line, give players Limited permission on it, and put it on their hotbars (Bayard's Hotbar Expansion's editor can put it on everyone's):
+
+```
+game.modules.get("pf2e-campaign-trackers").api.propose();
+```
+
+It proposes for the player's selected token, or their own character. The card works as in a challenge, without "Counts as": the DC starts from the character's level, players never see it, and the roll records nothing in any tracker.
+
 ## Quests
 
 A quest log for the party: what they've taken on, what's next, what they've learned and what it pays. Quests sit in a list on the left, grouped by status, with the chosen quest beside it like a journal. Every part starts hidden, so you can write a quest out ahead of time and reveal it a piece at a time.
@@ -285,6 +295,7 @@ api.set("tracker-id", "segments.2.state", "filled");
 api.reveal("tracker-id");
 api.list()   // every tracker, with its id
 api.open()   // open the window where it was left
+api.propose()   // propose a check outside a skill challenge (the selected token's character, or the user's own)
 api.open("reputation")   // open it on a tab: "quest", "reputation", "pressure", "points", "challenge", "influence",
                          // "research", "chase", "infiltration", "clock", "checklist", a tab's label ("Victory Points"),
                          // or a tracker's id (its tab; for a quest, that quest)

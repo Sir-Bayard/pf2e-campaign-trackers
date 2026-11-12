@@ -1352,6 +1352,8 @@ function skillLabel(slug) {
 
 /** The roll option that ties a roll to a tracker: pf2e-campaign-trackers:<tracker>:<target>:<check>. */
 const rollTag = (tid, target, checkId) => `${MOD}:${tid}:${target}:${checkId}`;
+/** The tracker id on rolls from proposals made outside a skill challenge. */
+const FREE_TID = "~free";
 function parseTag(options) {
   const tag = (options ?? []).find((o) => typeof o === "string" && o.startsWith(`${MOD}:`));
   if (!tag) return null;
@@ -1636,12 +1638,12 @@ function actorSkills(actor) {
 const PROPOSE_BTN = (tid) => `<p class="pct-propose"><button type="button" data-pct-propose="${esc(tid)}"><i class="fa-solid fa-lightbulb"></i> Propose an approach</button></p>`;
 
 /**
- * A player proposes an approach to a skill challenge: a skill of their character, what they do and
- * why the skill fits. It goes to chat as a card the GM approves or declines.
+ * A player proposes an approach to a skill challenge, or a check in free play (no tid): a skill of
+ * their character, what they do and why the skill fits. It goes to chat as a card the GM approves or declines.
  */
 async function proposeDialog(tid, fallback = {}) {
-  const t = visibleTrackers().find((x) => x.id === tid);
-  const name = t?.name ?? fallback.name ?? KIND_INFO.challenge.label;
+  const t = tid ? visibleTrackers().find((x) => x.id === tid) : null;
+  const name = tid ? t?.name ?? fallback.name ?? KIND_INFO.challenge.label : "Proposal";
   const explain = (t ? t.explain : fallback.explain) !== false;
   const actor = rollers()[0];
   if (!actor) return ui.notifications.warn(game.user.isGM ? "Select the token of the character who is proposing." : "Select your token, or ask the GM to assign you a character.");
@@ -1651,7 +1653,7 @@ async function proposeDialog(tid, fallback = {}) {
   let v = { skill: skills.find(([x]) => x !== "perception")?.[0] ?? skills[0][0], what: "", why: "" };
   for (;;) {
     const res = await foundry.applications.api.DialogV2.wait({
-      window: { title: `Propose: ${name}` },
+      window: { title: tid ? `Propose: ${name}` : "Propose a check" },
       classes: ["pct-propose-dialog"],
       content: `<p>Proposing for <strong>${esc(pcName(actor))}</strong>.</p>
         <div class="form-group"><label>Skill</label><select name="skill">${skills.map(([x, l]) => `<option value="${esc(x)}" ${x === v.skill ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></div>
@@ -1680,7 +1682,7 @@ async function proposeDialog(tid, fallback = {}) {
       ${v.what ? `<p>${para(v.what)}</p>` : ""}${v.why ? `<p><span class="pct-k">Why</span> ${para(v.why)}</p>` : ""}
       <div class="pct-prop-state"></div></div>`,
     speaker: ChatMessage.getSpeaker({ actor }),
-    flags: { [SCOPE]: { proposal: { tid, actorId: actor.id, userId: game.user.id, skill: v.skill, what: v.what, why: v.why, status: "pending" } } },
+    flags: { [SCOPE]: { proposal: { tid: tid || null, actorId: actor.id, userId: game.user.id, skill: v.skill, what: v.what, why: v.why, status: "pending" } } },
   });
 }
 
@@ -1708,7 +1710,7 @@ function renderProposal(message, prop, root) {
       if (!actor) return ui.notifications.warn("The character who proposed this no longer exists.");
       const b = ev.currentTarget;
       b.disabled = true;
-      const roll = await rollAs(actor, { tid: prop.tid, target: prop.target, check: { id: prop.checkId, skill, dc: prop.dc }, title: prop.title, hideDC: true });
+      const roll = await rollAs(actor, { tid: prop.tid || FREE_TID, target: prop.target, check: { id: prop.checkId, skill, dc: prop.dc }, title: prop.title, hideDC: true });
       // The active GM marks the card rolled when the roll arrives (see createChatMessage below).
       if (!roll) b.disabled = false;
     });
@@ -1725,8 +1727,9 @@ function renderProposal(message, prop, root) {
 function proposalControls(message, prop, actor) {
   const el = document.createElement("div");
   el.className = "pct-prop-gm";
-  const t = Store.get(prop.tid);
-  if (!t) {
+  const free = !prop.tid;
+  const t = free ? null : Store.get(prop.tid);
+  if (!free && !t) {
     el.innerHTML = `<p class="pct-hint">That skill challenge no longer exists.</p>`;
     return el;
   }
@@ -1735,18 +1738,20 @@ function proposalControls(message, prop, actor) {
   el.innerHTML = `<div class="pct-prop-row"><label>Skill <select name="skill">${skills.map(([x, l]) => `<option value="${esc(x)}" ${x === prop.skill ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></label>
       <label>DC <input type="number" name="dc"></label>
       <button type="button" data-adj="-2" data-tooltip="Easy: 2 lower">Easy</button><button type="button" data-adj="2" data-tooltip="Hard: 2 higher">Hard</button></div>
-    <div class="pct-prop-row"><label>Counts as <select name="approach"><option value="">On its own</option>${t.approaches.map((a) => `<option value="${esc(a.id)}">${esc(a.label || "Unnamed approach")}${a.revealed ? "" : " (hidden)"}</option>`).join("")}</select></label>
-      <label class="pct-prop-save" data-tooltip="Add it to the challenge's approaches, shown to players by what they wrote"><input type="checkbox" name="save"> Save as an approach</label></div>
+    ${free ? "" : `<div class="pct-prop-row"><label>Counts as <select name="approach"><option value="">On its own</option>${t.approaches.map((a) => `<option value="${esc(a.id)}">${esc(a.label || "Unnamed approach")}${a.revealed ? "" : " (hidden)"}</option>`).join("")}</select></label>
+      <label class="pct-prop-save" data-tooltip="Add it to the challenge's approaches, shown to players by what they wrote"><input type="checkbox" name="save"> Save as an approach</label></div>`}
     <div class="pct-prop-row"><button type="button" data-act="approve"><i class="fa-solid fa-check"></i> Approve</button></div>
     <div class="pct-prop-row"><input type="text" name="reason" placeholder="Reason, if you decline (optional)"><button type="button" data-act="decline"><i class="fa-solid fa-xmark"></i> Decline</button></div>`;
   const $ = (n) => el.querySelector(`[name="${n}"]`);
   const sync = () => {
+    if (free) return;
     const linked = !!$("approach").value;
     $("save").disabled = linked;
     if (linked) $("save").checked = false;
   };
   // An approach that already uses the skill gives the DC and the link; otherwise the character's level does.
   const prefill = () => {
+    if (free) return void ($("dc").value = levelDC(actor?.level ?? 0));
     const skill = $("skill").value;
     const a = t.approaches.find((x) => prefillable(x) && x.checks.some((c) => String(c.skill).toLowerCase() === skill && c.dc !== null && c.dc !== ""));
     const c = a?.checks.find((x) => String(x.skill).toLowerCase() === skill);
@@ -1756,7 +1761,7 @@ function proposalControls(message, prop, actor) {
   };
   prefill();
   $("skill").addEventListener("change", prefill);
-  $("approach").addEventListener("change", sync);
+  $("approach")?.addEventListener("change", sync);
   for (const b of el.querySelectorAll("[data-adj]")) b.addEventListener("click", (ev) => {
     ev.preventDefault();
     $("dc").value = num($("dc").value) + Number(b.dataset.adj);
@@ -1765,8 +1770,8 @@ function proposalControls(message, prop, actor) {
     ev.preventDefault();
     ev.currentTarget.disabled = true;
     const dc = $("dc").value === "" ? null : num($("dc").value);
-    const pick = { skill: $("skill").value, dc, approach: $("approach").value, save: $("save").checked };
-    onceFor(message, (m) => approveProposal(m, prop, pick));
+    const pick = { skill: $("skill").value, dc, approach: $("approach")?.value ?? "", save: !!$("save")?.checked };
+    onceFor(message, (m) => (free ? approveFree(m, prop, pick) : approveProposal(m, prop, pick)));
   });
   el.querySelector('[data-act="decline"]').addEventListener("click", (ev) => {
     ev.preventDefault();
@@ -1778,6 +1783,13 @@ function proposalControls(message, prop, actor) {
     });
   });
   return el;
+}
+
+/** Approve a free-play proposal: the skill and DC, and the roll button for its character. */
+async function approveFree(message, prop, { skill, dc }) {
+  if (!game.user.isGM || message.getFlag(SCOPE, "proposal")?.status !== "pending") return;
+  const id = foundry.utils.randomID(10);
+  await message.update({ [`flags.${SCOPE}.proposal`]: { ...prop, status: "approved", finalSkill: skill, dc, target: id, checkId: id, title: shortText(prop.what) || skillLabel(skill) } });
 }
 
 /**
@@ -4935,6 +4947,9 @@ Hooks.once("ready", async () => {
   setTimeout(repaintQuestLinks, 2000);
   const api = {
     open: (tab) => TrackersApp.open(tab),
+    /** Propose a check outside a skill challenge: the selected token's character (or the user's own), a skill,
+     * what they do and why. The GM approves it with a DC, and the player rolls from the card. For a hotbar macro. */
+    propose: () => proposeDialog(null),
     /** Open the window on a quest this user can see (another module's link to it, say). */
     openQuest: (id) => openQuest(id),
     /** The quests this user can see (the GM: all of them), with what a list needs: id, name, status, its label,

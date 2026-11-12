@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.5.0
+
+- Proposals outside a skill challenge: a player can propose a check in ordinary play, with the skill (lores included), what they do and why, from a hotbar macro running `game.modules.get("pf2e-campaign-trackers").api.propose()`. You set the skill and DC (the character's level DC to start, Easy and Hard) and approve or decline it on the card, as in a challenge. Approved, it's a roll button for the player, who never sees the DC.
+
 ## 2.4.0
 
 - Reveal links for your prep notes: a button in a journal page that reveals parts of a quest when the moment comes. Drag an objective, step, journal entry, lead or reward from your view of the quest into a page, or click its link icon to copy the link. For one button that reveals several parts, click the link icon in the quest's header, tick the parts, and drag or copy the link. To add parts to a link later, drop them on its button while reading the page.
