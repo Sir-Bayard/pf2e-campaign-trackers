@@ -251,6 +251,12 @@
 .pct-app .pct-qjournal li, .pct-app .pct-qleads li, .pct-app .pct-qrewards li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; padding: 3px 0; border-bottom: 1px solid var(--pct-soft); }
 .pct-app .pct-qjournal li > span:not([class]), .pct-app .pct-qleads li > span, .pct-app .pct-qrewards li > span { flex: 1 1 200px; }
 .pct-app .pct-qjournal li.pct-qsep, .pct-app .pct-qleads li.pct-qsep { display: block; padding: 0; margin: 6px 0 3px; border-bottom: 1px dashed var(--pct-accent); opacity: 0.6; }
+.pct-app .pct-qjournal li.pct-qgroup { display: block; padding: 3px 0 0; border-bottom: none; }
+.pct-app .pct-qgroup > details > summary { cursor: pointer; font-weight: bold; padding: 2px 0; }
+.pct-app .pct-qgroup > details > ul { margin: 0 0 2px 12px; padding: 0 0 0 8px; list-style: none; border-left: 2px solid var(--pct-line); }
+.pct-app .pct-qjournal li[draggable="true"] { cursor: grab; }
+.pct-app .pct-drop-over { outline: 1px dashed var(--pct-accent); outline-offset: 1px; background: rgba(176, 141, 74, 0.12); }
+.pct-app .pct .pct-chip.pct-qclues, .pct-app .pct .pct-chip.pct-qunder { opacity: 0.8; }
 .pct-app .pct-qleads li.pct-qfollowed { display: block; padding: 3px 0 0; border-bottom: none; }
 .pct-app .pct-qfollowed > details > summary { cursor: pointer; opacity: 0.7; font-size: 0.92em; }
 .pct-app .pct-qfollowed > details > ul { margin: 2px 0 0; padding: 0; list-style: none; }

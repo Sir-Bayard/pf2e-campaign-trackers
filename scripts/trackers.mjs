@@ -85,7 +85,7 @@ const TPL = {
   entry: () => ({ id: uid(), group: "", label: "", detail: "", effect: "", closes: null, tag: "", done: false, revealed: false, reminded: null }),
   objective: () => ({ id: uid(), text: "", gm: "", state: "open", optional: false, count: null, have: 0, mode: "all", steps: [], onDone: [], doneBy: null, link: null, revealed: false }),
   step: () => ({ id: uid(), text: "", gm: "", state: "open", optional: false, count: null, have: 0, onDone: [], doneBy: null, link: null, revealed: false }),
-  qentry: () => ({ id: uid(), date: null, text: "", revealed: false, revealedAt: null }),
+  qentry: () => ({ id: uid(), date: null, text: "", revealed: false, revealedAt: null, under: "" }),
   lead: () => ({ id: uid(), text: "", to: "", clue: "", gm: "", revealed: false, followed: false, followedBy: null }),
   reward: () => ({ id: uid(), text: "", gm: "", actor: null, revealed: false }),
 };
@@ -195,6 +195,9 @@ function normalize(raw) {
       if (o.mode !== "any") o.mode = "all";
       o.steps.forEach(fixGoal);
     }
+    // A clue is filed under an objective or step of the same quest, or under nothing.
+    const goals = new Set(t.objectives.flatMap((o) => [o.id, ...o.steps.map((st) => st.id)]));
+    for (const e of t.entries) e.under = typeof e.under === "string" && goals.has(e.under) ? e.under : "";
   }
   return t;
 }
@@ -368,6 +371,24 @@ function applyLeadFollow(t, leadId, to, userId) {
   return false;
 }
 
+/**
+ * A player files a shown clue under a shown objective or step (or under nothing), on a revealed, unfinished quest. A
+ * clue the GM filed under something players can't see stays where it is. Changes `t` in place; true when it changed.
+ */
+function applyClueSort(t, clueId, under) {
+  if (t?.kind !== "quest" || !t.revealed || !["active", "lead"].includes(t.status)) return false;
+  const e = (t.entries ?? []).find((x) => x.id === clueId);
+  if (!e || !e.revealed) return false;
+  if (e.under && !rowShown(findRow(t, e.under))) return false;
+  if (under) {
+    const f = findRow(t, under);
+    if (!f || !["objectives", "objectives.steps"].includes(f.list) || !rowShown(f)) return false;
+  }
+  if ((e.under ?? "") === under) return false;
+  e.under = under;
+  return true;
+}
+
 const NOTE_MAX = 60, NOTE_LEN = 1000;
 /* Party quests. A player's edit runs on their copy of the quest; what changed (fields set, rows added, removed,
  * edited or reordered, matched by id) goes to the GM's client, which applies only the parts players may change.
@@ -376,7 +397,7 @@ const PARTY_FIELDS = ["name", "desc", "status", "category", "location", "giverTe
 const STEP_ROWS = { tpl: "step", fields: ["text", "optional", "count", "have"] };
 const PARTY_ROWS = {
   objectives: { tpl: "objective", fields: ["text", "optional", "count", "have", "mode"], nested: "steps" },
-  entries: { tpl: "qentry", fields: ["date", "text"] },
+  entries: { tpl: "qentry", fields: ["date", "text", "under"] },
   leads: { tpl: "lead", fields: ["text"] },
   rewards: { tpl: "reward", fields: ["text"] },
 };
@@ -431,6 +452,7 @@ function partyValue(f, v) {
     case "desc": return text(4000);
     case "category": case "location": case "giverText": return text(80);
     case "text": return text(1000);
+    case "under": return text(40);
     case "deadline": case "date": return date();
     case "optional": return !!v;
     case "count": {
@@ -673,6 +695,13 @@ function tickToGM(tid, goal, to) {
   ownTicks.get(tid).set(goal, { to, at: Date.now() });
   return true;
 }
+/** A player asks the GM to file a clue under a goal (or nothing), remembered like a tick. */
+function sortToGM(tid, clue, under) {
+  if (!sendToGM({ type: "qsort", tid, clue, under })) return false;
+  if (!ownTicks.has(tid)) ownTicks.set(tid, new Map());
+  ownTicks.get(tid).set(clue, { to: under, at: Date.now() });
+  return true;
+}
 /** A player asks the GM to mark a lead followed or not, remembered like a tick. */
 function followToGM(tid, lead, to) {
   if (!sendToGM({ type: "qfollow", tid, lead, to })) return false;
@@ -680,7 +709,7 @@ function followToGM(tid, lead, to) {
   ownTicks.get(tid).set(lead, { to, at: Date.now() });
   return true;
 }
-/** True when the only change from `old` to `q` is in goals this player ticked or leads they followed themselves. */
+/** True when the only change from `old` to `q` is in goals this player ticked, leads they followed or clues they filed. */
 function onlyOwnTicks(old, q) {
   const mine = ownTicks.get(q.id);
   if (!mine?.size) return false;
@@ -690,6 +719,14 @@ function onlyOwnTicks(old, q) {
       const asked = mine.get(g.id);
       const now = asked && Date.now() - asked.at < 15000 ? findGoal(q, g.id)?.g : null;
       if (now && now.state === asked.to) Object.assign(g, { state: now.state, doneBy: now.doneBy });
+    }
+  }
+  for (const e of copy.entries ?? []) {
+    const asked = mine.get(e.id);
+    const now = asked && Date.now() - asked.at < 15000 ? (q.entries ?? []).find((x) => x.id === e.id) : null;
+    if (now && (now.under ?? "") === asked.to) {
+      if (now.under) e.under = now.under;
+      else delete e.under;
     }
   }
   for (const l of copy.leads ?? []) {
@@ -752,6 +789,8 @@ function questNotices(pub) {
 }
 
 const SOCKET = `module.${MOD}`;
+/** The drag data type of a clue dragged within the window. */
+const CLUE_DRAG = "application/x-pct-clue";
 
 /**
  * A player's request to the active GM (ticks, Party Journal entries, party quests). False when no GM is logged in.
@@ -798,7 +837,7 @@ async function onSocket(msg, senderId) {
   const user = sender;
   if (!user || user.isGM || (msg.userId && msg.userId !== user.id)) return;
   const fail = (text) => game.socket.emit(SOCKET, { type: "qfail", to: user.id, text });
-  if (!["qtick", "qfollow", "qnote", "qnoteDel", "qnew", "qedit", "qdel"].includes(msg.type)) return;
+  if (!["qtick", "qfollow", "qsort", "qnote", "qnoteDel", "qnew", "qedit", "qdel"].includes(msg.type)) return;
   if (!storeReady || Store.broken) return fail("The GM's trackers aren't ready yet. Try again in a moment.");
   if (!game.settings.get(MOD, "playerAccess")) return;
   const who = user.character ? pcName(user.character) : user.name;
@@ -820,6 +859,15 @@ async function onSocket(msg, senderId) {
     else if (!done) {
       const l = (Store.get(msg.tid)?.leads ?? []).find((x) => x.id === msg.lead);
       if (!l || l.followed !== (msg.to === "done")) fail("That didn't go through. It may have changed in the meantime; look again.");
+    }
+  } else if (msg.type === "qsort") {
+    const party = partyTicks(Store.get(msg.tid));
+    if (!game.settings.get(MOD, "playerTicks") && !party) return;
+    const under = typeof msg.under === "string" ? msg.under : "";
+    const done = await mutateTracker(msg.tid, (t) => applyClueSort(t, msg.clue, under) || undefined, { notify: false });
+    if (!done) {
+      const e = (Store.get(msg.tid)?.entries ?? []).find((x) => x.id === msg.clue);
+      if (!e || (e.under ?? "") !== under) fail("That didn't go through. It may have changed in the meantime; look again.");
     }
   } else if (msg.type === "qnote") {
     const now = Date.now();
@@ -1316,7 +1364,7 @@ function project(t, { force = false, all = null } = {}) {
         giver: t.giver ? { name: t.giver.name, img: t.giver.img } : t.giverText ? { name: t.giverText, img: "" } : null,
         location: t.location, deadline: t.showDue !== false ? t.deadline : null, dueHidden: t.party && t.showDue === false ? true : undefined,
         objectives: shown(t.objectives).map((o) => ({ ...goal(o), mode: o.mode, steps: shown(o.steps).map(goal) })),
-        entries: shown(t.entries).map((e) => ({ id: e.id, date: e.date, text: e.text, by: e.by || undefined, revealedAt: e.revealedAt ?? undefined })),
+        entries: shown(t.entries).map((e) => ({ id: e.id, date: e.date, text: e.text, by: e.by || undefined, revealedAt: e.revealedAt ?? undefined, under: e.under && rowShown(findRow(t, e.under)) ? e.under : undefined })),
         leads: shown(t.leads).map((l) => {
           const q = linked(l.to);
           return { id: l.id, text: l.text, to: q ? { id: q.id, name: q.name } : null, followed: l.followed || undefined, followedBy: l.followed ? (l.followedBy === "gm" ? "gm" : "player") : undefined };
@@ -1396,7 +1444,7 @@ let storeReady = false;
 /** Fields that belong to play, kept when a preset's text is updated. */
 const STATE_KEYS = new Set(["value", "revealed", "round", "current", "awareness", "edge", "roundsUsed", "progress", "byActor", "done", "state", "earned", "reminded", "showValue", "showAwareness", "showLabels", "npc", "successes", "failures", "used", "log", "showCount", "adhoc", "status", "have", "pnotes", "doneBy", "focus", "showDue", "revealedAt", "followed", "followedBy"]);
 /** Fields a preset usually leaves empty for the GM to fill in play: kept unless the preset gives a value. */
-const KEEP_IF_EMPTY = new Set(["giver", "actor", "img", "deadline", "onDone", "link", "clue"]);
+const KEEP_IF_EMPTY = new Set(["giver", "actor", "img", "deadline", "onDone", "link", "clue", "under"]);
 const isEmptyVal = (v) => v === null || v === undefined || v === "" || (Array.isArray(v) && !v.length);
 
 /**
@@ -2778,26 +2826,39 @@ function goalLine(g, path, { gm, steps = null, mode = "all", tick = false, party
   return `${box}<span class="pct-qtext">${para(g.text) || (gm ? "<em>No text</em>" : "")}</span>${g.optional ? `<span class="pct-chip">optional</span>` : ""}${count}${stepNote}${link}`;
 }
 
-/** Quests whose Followed group is open, kept in this browser. */
-const FOLLOWED_KEY = `${MOD}.followedOpen`;
-const followedOpen = (() => {
+/** Quest groups (Followed leads, filed clues) opened or closed away from their default, kept in this browser. */
+const FOLDS_KEY = `${MOD}.folds`;
+const folds = (() => {
   try {
-    return new Set(JSON.parse(globalThis.localStorage?.getItem(FOLLOWED_KEY) ?? "[]"));
+    const v = JSON.parse(globalThis.localStorage?.getItem(FOLDS_KEY) ?? "{}");
+    return v && typeof v === "object" ? v : {};
   } catch {
-    return new Set();
+    return {};
   }
 })();
+const foldOpen = (key, byDefault) => (Object.hasOwn(folds, key) ? !!folds[key] : byDefault);
 function onFoldToggle(ev) {
   const d = ev.target;
   if (!(d instanceof HTMLDetailsElement) || !d.dataset.pctFold) return;
-  if (d.open === followedOpen.has(d.dataset.pctFold)) return;
-  if (d.open) followedOpen.add(d.dataset.pctFold);
-  else followedOpen.delete(d.dataset.pctFold);
+  const key = d.dataset.pctFold;
+  const byDefault = d.dataset.foldDefault === "open";
+  if (d.open === foldOpen(key, byDefault)) return;
+  if (d.open === byDefault) delete folds[key];
+  else folds[key] = d.open;
   try {
-    localStorage.setItem(FOLLOWED_KEY, JSON.stringify([...followedOpen]));
+    localStorage.setItem(FOLDS_KEY, JSON.stringify(folds));
   } catch {
-    /* no storage: it opens closed next time */
+    /* no storage: it goes back to its default next time */
   }
+}
+
+/** A goal of a quest by id, with a heading for its clue group: the objective, or "objective: step". */
+function goalHeading(q, id) {
+  for (const o of q.objectives ?? []) {
+    if (o.id === id) return { g: o, label: shortText(o.text, 70) || "(no text)" };
+    for (const st of o.steps ?? []) if (st.id === id) return { g: st, label: `${shortText(o.text, 40) || "(no text)"}: ${shortText(st.text, 40) || "(no text)"}` };
+  }
+  return null;
 }
 
 /**
@@ -2830,15 +2891,42 @@ function questBody(q, { gm, party = false, all = [], open = new Set(), readOnly 
   const tick = !readOnly && !gm && !game.user.isGM && ["active", "lead"].includes(q.status) && (!!game.settings.get(MOD, "playerTicks") || partyTicks(q));
   // Party ticks send the GM no card; the party's own editor view can count progress too.
   const own = partyTicks(q);
-  const objectives = q.objectives.map((o, i) => {
+  const objectives = () => q.objectives.map((o, i) => {
     const p = `objectives.${i}`;
-    const steps = o.steps.map((st, j) => `<li class="pct-q-${esc(st.state)}">${gm ? eye(`${p}.steps.${j}`, st.revealed) : ""}${rl(st.id)}${goalLine(st, `${p}.steps.${j}`, { gm, tick, party: own, counts: party })}${rlEnd(st.id)}${gm && st.gm ? gmBox(st.gm) : ""}</li>`).join("");
-    return `<li class="pct-q-${esc(o.state)}"><div class="pct-qrow">${gm ? eye(p, o.revealed) : ""}${rl(o.id)}${goalLine(o, p, { gm, steps: o.steps, mode: o.mode, tick, party: own, counts: party })}${rlEnd(o.id)}</div>
+    const steps = o.steps.map((st, j) => `<li class="pct-q-${esc(st.state)}"${drop(st.id)}>${gm ? eye(`${p}.steps.${j}`, st.revealed) : ""}${rl(st.id)}${goalLine(st, `${p}.steps.${j}`, { gm, tick, party: own, counts: party })}${filedChip(st.id)}${rlEnd(st.id)}${gm && st.gm ? gmBox(st.gm) : ""}</li>`).join("");
+    return `<li class="pct-q-${esc(o.state)}"><div class="pct-qrow"${drop(o.id)}>${gm ? eye(p, o.revealed) : ""}${rl(o.id)}${goalLine(o, p, { gm, steps: o.steps, mode: o.mode, tick, party: own, counts: party })}${filedChip(o.id)}${rlEnd(o.id)}</div>
         ${gm && o.gm ? gmBox(o.gm) : ""}
         ${steps ? `<ul class="pct-qsteps"><li class="pct-k">${o.mode === "any" ? "Any one of these" : "All of these"}</li>${steps}</ul>` : ""}</li>`;
   }).join("");
+  // Who can file clues: the GM, and players who can tick (or on their party quest), by dragging onto goals.
+  const sortable = (gm && can) || tick;
+  const drop = (id) => (sortable ? ` data-goal-drop="${esc(id)}"` : "");
   const clues = clueOrder(q.entries);
-  const entries = shownFirst(clues.shown, clues.hidden, ({ e, i }) => `<li>${gm ? eye(`entries.${i}`, e.revealed) : ""}${rl(e.id)}${e.date ? `<span class="pct-date-chip">${esc(fmtDate(e.date))}</span>` : ""}<span>${e.by ? `<strong class="pct-entry-by">${esc(e.by)}</strong> ` : ""}${para(e.text)}</span>${rlEnd(e.id)}</li>`);
+  const clueLi = ({ e, i }) => {
+    const hiddenUnder = gm && e.revealed === false && e.under ? goalHeading(q, e.under) : null;
+    const drag = (gm && can) || (tick && e.revealed !== false) ? ` draggable="true" data-clue="${esc(e.id)}"` : "";
+    return `<li${drag}>${gm ? eye(`entries.${i}`, e.revealed) : ""}${rl(e.id)}${e.date ? `<span class="pct-date-chip">${esc(fmtDate(e.date))}</span>` : ""}<span>${e.by ? `<strong class="pct-entry-by">${esc(e.by)}</strong> ` : ""}${para(e.text)}</span>${hiddenUnder ? `<span class="pct-chip pct-qunder" data-tooltip-text="${esc(hiddenUnder.label)}"><i class="fa-solid fa-folder"></i> ${esc(shortText(hiddenUnder.label, 24))}</span>` : ""}${rlEnd(e.id)}</li>`;
+  };
+  const unsorted = [], groups = new Map();
+  for (const r of clues.shown) {
+    const h = r.e.under ? goalHeading(q, r.e.under) : null;
+    if (!h) unsorted.push(r);
+    else {
+      if (!groups.has(r.e.under)) groups.set(r.e.under, { h, rows: [] });
+      groups.get(r.e.under).rows.push(r);
+    }
+  }
+  const groupHtml = [...groups].map(([gid, { h, rows }]) => {
+    const key = `g:${q.id}:${gid}`;
+    return `<li class="pct-qgroup"><details data-pct-fold="${esc(key)}" data-fold-default="open"${foldOpen(key, true) ? " open" : ""}${drop(gid)}><summary>${esc(h.label)} <span class="pct-k">${rows.length}</span></summary><ul class="pct-qjournal">${rows.map(clueLi).join("")}</ul></details></li>`;
+  }).join("");
+  const top = unsorted.map(clueLi).join("") + groupHtml;
+  const entries = clues.hidden.length ? `${top}${top ? `<li class="pct-qsep" aria-hidden="true"></li>` : ""}${clues.hidden.map(clueLi).join("")}` : top;
+  // How many clues are filed under each goal (a players' copy has only what they can see).
+  const filedChip = (id) => {
+    const n = (q.entries ?? []).filter((e) => e.under === id).length;
+    return n ? `<span class="pct-chip pct-qclues" data-tooltip="Clues filed under it"><i class="fa-solid fa-magnifying-glass"></i> ${n}</span>` : "";
+  };
   const leadRows = q.leads.map((l, i) => ({ l, i }));
   // GM data names who followed by user id or "gm"; a players' copy by "gm" or "player".
   const followBox = (l) => {
@@ -2859,29 +2947,30 @@ function questBody(q, { gm, party = false, all = [], open = new Set(), readOnly 
   const openLeads = leadRows.filter((r) => !r.l.followed);
   const followed = leadRows.filter((r) => r.l.followed);
   const leads = shownFirst(openLeads.filter((r) => r.l.revealed !== false), openLeads.filter((r) => r.l.revealed === false), leadLi)
-    + (followed.length ? `<li class="pct-qfollowed"><details data-pct-fold="${esc(q.id)}"${followedOpen.has(q.id) ? " open" : ""}><summary>Followed (${followed.length})</summary><ul class="pct-qleads">${followed.map(leadLi).join("")}</ul></details></li>` : "");
+    + (followed.length ? `<li class="pct-qfollowed"><details data-pct-fold="${esc(`f:${q.id}`)}" data-fold-default="closed"${foldOpen(`f:${q.id}`, false) ? " open" : ""}><summary>Followed (${followed.length})</summary><ul class="pct-qleads">${followed.map(leadLi).join("")}</ul></details></li>` : "");
   const rewards = q.rewards.map((r, i) => {
     const actor = r.actor ? `<a class="pct-npc" data-action="pctOpenActor" data-uuid="${esc(r.actor.uuid)}" data-tooltip="Open the sheet">${r.actor.img ? `<img src="${esc(r.actor.img)}" alt="">` : ""}<strong>${esc(r.actor.name)}</strong></a>` : "";
     return `<li>${gm ? eye(`rewards.${i}`, r.revealed) : ""}${rl(r.id)}<i class="fa-solid fa-gem"></i><span>${para(r.text)}</span>${actor}${rlEnd(r.id)}${gm && r.gm ? gmBox(r.gm) : ""}</li>`;
   }).join("");
   const notes = partyNotes(q, { gm, readOnly });
+  const goalsHtml = objectives();
   if (!gm && !party) {
-    return `${objectives ? `<div class="pct-sub">Objectives</div><ul class="pct-qgoals">${objectives}</ul>` : ""}
-      ${entries ? `<div class="pct-sub">Clues</div><ul class="pct-qjournal">${entries}</ul>` : ""}
+    return `${goalsHtml ? `<div class="pct-sub">Objectives</div><ul class="pct-qgoals">${goalsHtml}</ul>` : ""}
+      ${entries ? `<div class="pct-sub"${drop("")}>Clues</div><ul class="pct-qjournal"${drop("")}>${entries}</ul>` : ""}
       ${leads ? `<div class="pct-sub">Leads</div><ul class="pct-qleads">${leads}</ul>` : ""}
       ${rewards ? `<div class="pct-sub">Rewards</div><ul class="pct-qrewards">${rewards}</ul>` : ""}
       ${notes}`;
   }
   const section = (sec, title, list, add, html, cls) => {
     const editing = open.has(sec);
-    return `<div class="pct-qsec" data-sec="${sec}"><div class="pct-sub">${esc(title)}
+    return `<div class="pct-qsec" data-sec="${sec}"><div class="pct-sub"${sec === "entries" ? drop("") : ""}>${esc(title)}
         ${A("pctQSec", editing ? "fa-solid fa-check" : "fa-solid fa-pen", { tip: editing ? "Done" : `Edit ${title.toLowerCase()}`, data: { sec }, cls: `pct-qsec-btn ${editing ? "pct-on" : ""}` })}
         ${A("pctAdd", "fa-solid fa-plus", { tip: `Add ${add}`, data: { list, sec }, cls: "pct-qsec-btn" })}</div>
-      ${editing ? `<div class="pct-qsec-edit">${(party ? QEDIT_PARTY : QEDIT)[sec](q)}</div>` : html ? `<ul class="${cls}">${html}</ul>` : `<p class="pct-hint">None yet.</p>`}</div>`;
+      ${editing ? `<div class="pct-qsec-edit">${(party ? QEDIT_PARTY : QEDIT)[sec](q)}</div>` : html ? `<ul class="${cls}"${sec === "entries" ? drop("") : ""}>${html}</ul>` : `<p class="pct-hint">None yet.</p>`}</div>`;
   };
   const from = all.flatMap((x) => (x.kind === "quest" && x.id !== q.id ? x.leads.filter((l) => l.to === q.id).map((l) => ({ x, l })) : []));
   const fromHtml = gm && from.length ? `<div class="pct-qfrom"><span class="pct-k">Pointed to by</span>${from.map(({ x, l }) => `<a class="pct-qlink" data-action="pctQuestGo" data-qid="${esc(x.id)}" data-tooltip="${esc(l.text)}">${l.revealed ? "" : `<i class="fa-solid fa-eye-slash"></i> `}${esc(x.name)}</a>`).join("")}</div>` : "";
-  return `${section("objectives", "Objectives", "objectives", "an objective", objectives, "pct-qgoals")}
+  return `${section("objectives", "Objectives", "objectives", "an objective", goalsHtml, "pct-qgoals")}
     ${section("entries", "Clues", "entries", "a clue", entries, "pct-qjournal")}
     ${section("leads", "Leads", "leads", "a lead", leads, "pct-qleads")}${fromHtml}
     ${section("rewards", "Rewards", "rewards", "a reward", rewards, "pct-qrewards")}
@@ -3193,7 +3282,11 @@ const QEDIT = {
   objectives: (t) => listEditor("objectives", t.objectives, (o, p) => `${goalEdit(o, p, "Objective", t)}
       <div class="pct-line"><span class="pct-k">Steps</span>${L("Done when", F.select(`${p}.mode`, o.mode, [["all", "every step is done"], ["any", "any one step is done"]]))}</div>
       <div class="pct-nested">${listEditor(`${p}.steps`, o.steps, (st, sp) => goalEdit(st, sp, "Step", t), "Step")}</div>`, "Objective"),
-  entries: (t) => listEditor("entries", t.entries, (e, p) => `${L("Date", F.date(`${p}.date`, e.date))}${L("Clue", F.area(`${p}.text`, e.text, "The ferrywoman saw riders cross at dusk.", 2), "pct-grow")}`, "Clue"),
+  entries(t) {
+    const hid = (g) => (g.revealed === false ? " (hidden)" : "");
+    const goals = (t.objectives ?? []).flatMap((o) => [[o.id, `${shortText(o.text, 40) || "(no text)"}${hid(o)}`], ...(o.steps ?? []).map((st) => [st.id, `\u2003${shortText(st.text, 40) || "(no text)"}${hid(st)}`])]);
+    return listEditor("entries", t.entries, (e, p) => `${L("Date", F.date(`${p}.date`, e.date))}${L("Clue", F.area(`${p}.text`, e.text, "The ferrywoman saw riders cross at dusk.", 2), "pct-grow")}${goals.length ? L("Filed under", F.select(`${p}.under`, e.under ?? "", [["", "nothing"], ...goals])) : ""}`, "Clue");
+  },
   leads(t) {
     const others = Store.data.trackers.filter((x) => x.kind === "quest" && x.id !== t.id);
     const clues = (t.entries ?? []).map((e) => [e.id, shortText(e.text, 40) || "(no text)"]);
@@ -4488,6 +4581,14 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
         if (text) ev.dataTransfer.setData("text/plain", text);
         return;
       }
+      const clue = ev.target.closest?.("[data-clue]");
+      if (clue) {
+        const tid = clue.closest("[data-tid]")?.dataset.tid;
+        if (!tid) return;
+        ev.dataTransfer.setData(CLUE_DRAG, JSON.stringify({ tid, clue: clue.dataset.clue }));
+        ev.dataTransfer.effectAllowed = "move";
+        return;
+      }
       const a = ev.target.closest?.(".pct-qlist a[data-qid]");
       if (!a) return;
       const q = visibleTrackers().find((t) => t.id === a.dataset.qid);
@@ -4524,8 +4625,36 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     }, true);
     this.element.addEventListener("dragover", (ev) => {
       if (ev.target.closest?.("[data-drop]")) ev.preventDefault();
+      const zone = ev.dataTransfer?.types?.includes(CLUE_DRAG) ? ev.target.closest?.("[data-goal-drop]") : null;
+      if (!zone) return;
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect = "move";
+      if (this._dropZone !== zone) {
+        this._dropZone?.classList.remove("pct-drop-over");
+        zone.classList.add("pct-drop-over");
+        this._dropZone = zone;
+      }
     });
-    this.element.addEventListener("drop", (ev) => this.#onDrop(ev));
+    this.element.addEventListener("dragleave", (ev) => {
+      if (this._dropZone && !this._dropZone.contains(ev.relatedTarget)) {
+        this._dropZone.classList.remove("pct-drop-over");
+        this._dropZone = null;
+      }
+    });
+    this.element.addEventListener("drop", (ev) => {
+      this._dropZone?.classList.remove("pct-drop-over");
+      this._dropZone = null;
+      const zone = ev.dataTransfer?.types?.includes(CLUE_DRAG) ? ev.target.closest?.("[data-goal-drop]") : null;
+      if (!zone) return this.#onDrop(ev);
+      ev.preventDefault();
+      let data;
+      try {
+        data = JSON.parse(ev.dataTransfer.getData(CLUE_DRAG));
+      } catch {
+        return;
+      }
+      if (data?.tid && data.tid === zone.closest("[data-tid]")?.dataset.tid) this.#fileClue(data.tid, String(data.clue), zone.dataset.goalDrop ?? "");
+    });
   }
 
   _onClose() {
@@ -4642,6 +4771,20 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
       }
       foundry.utils.setProperty(t, path, value);
     });
+  }
+
+  /** File a clue under a goal (or nothing): the GM directly, a player through the GM. */
+  async #fileClue(tid, clueId, under) {
+    if (this.isGM) {
+      await mutateTracker(tid, (t) => {
+        const e = (t.entries ?? []).find((x) => x.id === clueId);
+        if (!e || (under && !findGoal(t, under)) || (e.under ?? "") === under) return undefined;
+        e.under = under;
+        return true;
+      }, { notify: false });
+      return;
+    }
+    if (!game.user.isGM) sortToGM(tid, clueId, under);
   }
 
   async #onDrop(ev) {
