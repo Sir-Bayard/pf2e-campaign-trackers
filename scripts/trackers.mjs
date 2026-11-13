@@ -2876,10 +2876,10 @@ function clueOrder(entries) {
   };
 }
 
-/** Rows split into shown and hidden (GM) with a line between, each built from its row and index. */
-function shownFirst(shownRows, hiddenRows, li) {
-  const top = shownRows.map(li).join("");
-  return hiddenRows.length ? `${top}${top ? `<li class="pct-qsep" aria-hidden="true"></li>` : ""}${hiddenRows.map(li).join("")}` : top;
+/** The GM's hidden rows of a list in a fold of their own, open unless closed in this browser. */
+function hiddenFold(key, rows, li, cls) {
+  if (!rows.length) return "";
+  return `<li class="pct-qhidden"><details data-pct-fold="${esc(key)}" data-fold-default="open"${foldOpen(key, true) ? " open" : ""}><summary>Hidden (${rows.length})</summary><ul class="${cls}">${rows.map(li).join("")}</ul></details></li>`;
 }
 
 /** The quest's objectives (with their steps), clues, leads and rewards. `gm` adds eyes, notes and controls;
@@ -2920,10 +2920,12 @@ function questBody(q, { gm, party = false, all = [], open = new Set(), readOnly 
   }
   const groupHtml = [...groups].map(([gid, { h, rows }]) => {
     const key = `g:${q.id}:${gid}`;
-    return `<li class="pct-qgroup"><details data-pct-fold="${esc(key)}" data-fold-default="open"${foldOpen(key, true) ? " open" : ""}${drop(gid)}><summary>${esc(h.label)} <span class="pct-k">${rows.length}</span></summary><ul class="pct-qjournal">${rows.map(clueLi).join("")}</ul></details></li>`;
+    // A finished objective's or step's clues start folded away.
+    const open = h.g.state !== "done" && h.g.state !== "failed";
+    return `<li class="pct-qgroup"><details data-pct-fold="${esc(key)}" data-fold-default="${open ? "open" : "closed"}"${foldOpen(key, open) ? " open" : ""}${drop(gid)}><summary>${esc(h.label)} <span class="pct-k">${rows.length}</span></summary><ul class="pct-qjournal">${rows.map(clueLi).join("")}</ul></details></li>`;
   }).join("");
   const top = unsorted.map(clueLi).join("") + groupHtml;
-  const entries = clues.hidden.length ? `${top}${top ? `<li class="pct-qsep" aria-hidden="true"></li>` : ""}${clues.hidden.map(clueLi).join("")}` : top;
+  const entries = top + hiddenFold(`h:${q.id}:entries`, clues.hidden, clueLi, "pct-qjournal");
   // How many clues are filed under each goal (a players' copy has only what they can see).
   const filedChip = (id) => {
     const n = (q.entries ?? []).filter((e) => e.under === id).length;
@@ -2948,7 +2950,7 @@ function questBody(q, { gm, party = false, all = [], open = new Set(), readOnly 
   };
   const openLeads = leadRows.filter((r) => !r.l.followed);
   const followed = leadRows.filter((r) => r.l.followed);
-  const leads = shownFirst(openLeads.filter((r) => r.l.revealed !== false), openLeads.filter((r) => r.l.revealed === false), leadLi)
+  const leads = openLeads.filter((r) => r.l.revealed !== false).map(leadLi).join("") + hiddenFold(`h:${q.id}:leads`, openLeads.filter((r) => r.l.revealed === false), leadLi, "pct-qleads")
     + (followed.length ? `<li class="pct-qfollowed"><details data-pct-fold="${esc(`f:${q.id}`)}" data-fold-default="closed"${foldOpen(`f:${q.id}`, false) ? " open" : ""}><summary>Followed (${followed.length})</summary><ul class="pct-qleads">${followed.map(leadLi).join("")}</ul></details></li>` : "");
   const rewards = q.rewards.map((r, i) => {
     const actor = r.actor ? `<a class="pct-npc" data-action="pctOpenActor" data-uuid="${esc(r.actor.uuid)}" data-tooltip="Open the sheet">${r.actor.img ? `<img src="${esc(r.actor.img)}" alt="">` : ""}<strong>${esc(r.actor.name)}</strong></a>` : "";
@@ -5358,8 +5360,8 @@ Hooks.once("init", () => {
     refresh();
   } });
   game.settings.register(MOD, "playerTicks", {
-    name: "Players can tick quest objectives",
-    hint: "Players mark revealed objectives and steps done, and can untick what a player ticked. The GM gets a card each time.",
+    name: "Players can tick objectives, follow leads and file clues",
+    hint: "On revealed quests: players mark objectives and steps done and leads followed (the GM gets a card each time), and file clues under objectives. They can undo a player's mark, not the GM's.",
     scope: "world", config: true, type: Boolean, default: true, onChange: () => refresh(),
   });
   game.settings.register(MOD, "partyQuests", {
