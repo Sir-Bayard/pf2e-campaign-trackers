@@ -86,7 +86,7 @@ const TPL = {
   objective: () => ({ id: uid(), text: "", gm: "", state: "open", optional: false, count: null, have: 0, mode: "all", steps: [], onDone: [], doneBy: null, link: null, revealed: false }),
   step: () => ({ id: uid(), text: "", gm: "", state: "open", optional: false, count: null, have: 0, onDone: [], doneBy: null, link: null, revealed: false }),
   qentry: () => ({ id: uid(), date: null, text: "", revealed: false, revealedAt: null }),
-  lead: () => ({ id: uid(), text: "", to: "", clue: "", gm: "", revealed: false }),
+  lead: () => ({ id: uid(), text: "", to: "", clue: "", gm: "", revealed: false, followed: false, followedBy: null }),
   reward: () => ({ id: uid(), text: "", gm: "", actor: null, revealed: false }),
 };
 
@@ -185,7 +185,11 @@ function normalize(raw) {
     // A party quest: made by a player, editable by the whole party (through the GM's client).
     t.party = t.party && typeof t.party === "object" && t.party.by ? { by: String(t.party.by), name: String(t.party.name ?? "") } : null;
     t.pnotes = Array.isArray(t.pnotes) ? t.pnotes : [];
-    for (const l of t.leads) l.clue = typeof l.clue === "string" ? l.clue : "";
+    for (const l of t.leads) {
+      l.clue = typeof l.clue === "string" ? l.clue : "";
+      l.followed = !!l.followed;
+      l.followedBy = l.followed && l.followedBy ? String(l.followedBy) : null;
+    }
     for (const o of t.objectives) {
       fixGoal(o);
       if (o.mode !== "any") o.mode = "all";
@@ -338,6 +342,27 @@ function applyQuestTick(t, goalId, to, userId) {
   if (to === "open" && g.state === "done" && g.doneBy && g.doneBy !== "gm") {
     g.state = "open";
     g.doneBy = null;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * A player marks a lead followed or not. Allowed on a revealed lead of a revealed, unfinished quest; a player undoes
+ * only a player's mark, not the GM's. Changes `t` in place and returns true when it changed.
+ */
+function applyLeadFollow(t, leadId, to, userId) {
+  if (t?.kind !== "quest" || !t.revealed || !["active", "lead"].includes(t.status)) return false;
+  const l = (t.leads ?? []).find((x) => x.id === leadId);
+  if (!l || !l.revealed) return false;
+  if (to === "done" && !l.followed) {
+    l.followed = true;
+    l.followedBy = userId;
+    return true;
+  }
+  if (to === "open" && l.followed && l.followedBy && l.followedBy !== "gm") {
+    l.followed = false;
+    l.followedBy = null;
     return true;
   }
   return false;
@@ -512,6 +537,59 @@ function leadClue(t, lead) {
   const f = lead?.clue ? findRow(t, lead.clue) : null;
   return f?.list === "entries" && !f.row.revealed ? f.row : null;
 }
+/** What a lead can reveal that players can't see yet: the quest it points to and its clue, each with a key. */
+function leadOffers(t, lead) {
+  if (!t || !lead) return [];
+  const to = Store.data.trackers.find((x) => x.id === lead.to && x.kind === "quest" && !x.revealed);
+  const clue = leadClue(t, lead);
+  return [
+    to && { key: "quest", kind: "quest", id: to.id, label: `The quest it points to, ${to.name}` },
+    clue && { key: `clue:${clue.id}`, kind: "clue", id: clue.id, label: `Its clue: ${shortText(clue.text, 70) || "(no text)"}` },
+  ].filter(Boolean);
+}
+
+/** Reveal the lead offers whose keys were picked, in one save. Returns how many things it revealed. */
+async function revealLeadOffers(tid, offers, keys) {
+  const pick = offers.filter((o) => keys.includes(o.key));
+  if (!pick.length) return 0;
+  const n = await mutate((d) => {
+    const t = d.trackers.find((x) => x.id === tid);
+    if (!t) return undefined;
+    let count = 0;
+    for (const o of pick) {
+      if (o.kind === "quest") {
+        const q = d.trackers.find((x) => x.id === o.id && x.kind === "quest");
+        if (q && !q.revealed) {
+          q.revealed = true;
+          count++;
+        }
+      } else count += revealRow(findRow(t, o.id)).length;
+    }
+    return count || undefined;
+  }, { notify: false });
+  return n ?? 0;
+}
+
+/** Checkboxes for lead offers, all ticked unless `ticked` is false. */
+const offerRows = (offers, ticked = true) => offers.map((o) => `<label class="pct-chk"><input type="checkbox" name="${esc(o.key)}"${ticked ? " checked" : ""}> <span>${esc(o.label)}</span></label>`).join("");
+
+/** The GM's client: ask whether to reveal what a lead points to, when players can't see it yet. */
+async function offerLead(tid, leadId) {
+  const t = Store.get(tid);
+  const offers = leadOffers(t, (t?.leads ?? []).find((l) => l.id === leadId));
+  if (!offers.length) return;
+  const keys = await foundry.applications.api.DialogV2.wait({
+    window: { title: "Lead" },
+    content: `<p>${offers.length === 1 ? "Players can't see this yet. Reveal it too?" : "Players can't see these yet. Reveal them too?"}</p><div class="pct-rl-rows">${offerRows(offers)}</div>`,
+    buttons: [
+      { action: "reveal", label: "Reveal", icon: "fa-solid fa-eye", default: true, callback: (ev, button) => offers.filter((o) => button.form.elements.namedItem(o.key)?.checked).map((o) => o.key) },
+      { action: "cancel", label: "Not now" },
+    ],
+    rejectClose: false,
+  });
+  if (Array.isArray(keys)) await revealLeadOffers(tid, offers, keys);
+}
+
 /** Does a found row show to players? A step only with its objective. */
 const rowShown = (f) => !!f?.row?.revealed && (f.list !== "objectives.steps" || !!f.parent?.revealed);
 /** "Step: Get disguises", plus ", and the objective it sits under (...)" when revealing it would bring that too. */
@@ -595,7 +673,14 @@ function tickToGM(tid, goal, to) {
   ownTicks.get(tid).set(goal, { to, at: Date.now() });
   return true;
 }
-/** True when the only change from `old` to `q` is in goals this player ticked themselves. */
+/** A player asks the GM to mark a lead followed or not, remembered like a tick. */
+function followToGM(tid, lead, to) {
+  if (!sendToGM({ type: "qfollow", tid, lead, to })) return false;
+  if (!ownTicks.has(tid)) ownTicks.set(tid, new Map());
+  ownTicks.get(tid).set(lead, { to, at: Date.now() });
+  return true;
+}
+/** True when the only change from `old` to `q` is in goals this player ticked or leads they followed themselves. */
 function onlyOwnTicks(old, q) {
   const mine = ownTicks.get(q.id);
   if (!mine?.size) return false;
@@ -605,6 +690,17 @@ function onlyOwnTicks(old, q) {
       const asked = mine.get(g.id);
       const now = asked && Date.now() - asked.at < 15000 ? findGoal(q, g.id)?.g : null;
       if (now && now.state === asked.to) Object.assign(g, { state: now.state, doneBy: now.doneBy });
+    }
+  }
+  for (const l of copy.leads ?? []) {
+    const asked = mine.get(l.id);
+    const now = asked && Date.now() - asked.at < 15000 ? (q.leads ?? []).find((x) => x.id === l.id) : null;
+    if (now && !!now.followed === (asked.to === "done")) {
+      if (now.followed) Object.assign(l, { followed: now.followed, followedBy: now.followedBy });
+      else {
+        delete l.followed;
+        delete l.followedBy;
+      }
     }
   }
   return questHash(copy) === questHash(q);
@@ -702,7 +798,7 @@ async function onSocket(msg, senderId) {
   const user = sender;
   if (!user || user.isGM || (msg.userId && msg.userId !== user.id)) return;
   const fail = (text) => game.socket.emit(SOCKET, { type: "qfail", to: user.id, text });
-  if (!["qtick", "qnote", "qnoteDel", "qnew", "qedit", "qdel"].includes(msg.type)) return;
+  if (!["qtick", "qfollow", "qnote", "qnoteDel", "qnew", "qedit", "qdel"].includes(msg.type)) return;
   if (!storeReady || Store.broken) return fail("The GM's trackers aren't ready yet. Try again in a moment.");
   if (!game.settings.get(MOD, "playerAccess")) return;
   const who = user.character ? pcName(user.character) : user.name;
@@ -715,6 +811,15 @@ async function onSocket(msg, senderId) {
     else if (!done) {
       const cur = Store.get(msg.tid);
       if (!cur || findGoal(cur, msg.goal)?.g.state !== msg.to) fail("That tick didn't go through. It may have changed in the meantime; look again.");
+    }
+  } else if (msg.type === "qfollow") {
+    const party = partyTicks(Store.get(msg.tid));
+    if (!game.settings.get(MOD, "playerTicks") && !party) return;
+    const done = await mutateTracker(msg.tid, (t) => applyLeadFollow(t, msg.lead, msg.to, user.id) || undefined, { notify: false });
+    if (done && msg.to === "done" && !party) await promptFollow(Store.get(msg.tid), msg.lead, who);
+    else if (!done) {
+      const l = (Store.get(msg.tid)?.leads ?? []).find((x) => x.id === msg.lead);
+      if (!l || l.followed !== (msg.to === "done")) fail("That didn't go through. It may have changed in the meantime; look again.");
     }
   } else if (msg.type === "qnote") {
     const now = Date.now();
@@ -1214,7 +1319,7 @@ function project(t, { force = false, all = null } = {}) {
         entries: shown(t.entries).map((e) => ({ id: e.id, date: e.date, text: e.text, by: e.by || undefined, revealedAt: e.revealedAt ?? undefined })),
         leads: shown(t.leads).map((l) => {
           const q = linked(l.to);
-          return { id: l.id, text: l.text, to: q ? { id: q.id, name: q.name } : null };
+          return { id: l.id, text: l.text, to: q ? { id: q.id, name: q.name } : null, followed: l.followed || undefined, followedBy: l.followed ? (l.followedBy === "gm" ? "gm" : "player") : undefined };
         }),
         rewards: shown(t.rewards).map((r) => ({ id: r.id, text: r.text, actor: r.actor ? { uuid: r.actor.uuid, name: r.actor.name, img: r.actor.img } : null })),
         pnotes: (t.pnotes ?? []).map((n) => ({ id: n.id, by: n.by, name: n.name, text: n.text, at: n.at })),
@@ -1289,7 +1394,7 @@ const presets = new Map();
 let storeReady = false;
 
 /** Fields that belong to play, kept when a preset's text is updated. */
-const STATE_KEYS = new Set(["value", "revealed", "round", "current", "awareness", "edge", "roundsUsed", "progress", "byActor", "done", "state", "earned", "reminded", "showValue", "showAwareness", "showLabels", "npc", "successes", "failures", "used", "log", "showCount", "adhoc", "status", "have", "pnotes", "doneBy", "focus", "showDue", "revealedAt"]);
+const STATE_KEYS = new Set(["value", "revealed", "round", "current", "awareness", "edge", "roundsUsed", "progress", "byActor", "done", "state", "earned", "reminded", "showValue", "showAwareness", "showLabels", "npc", "successes", "failures", "used", "log", "showCount", "adhoc", "status", "have", "pnotes", "doneBy", "focus", "showDue", "revealedAt", "followed", "followedBy"]);
 /** Fields a preset usually leaves empty for the GM to fill in play: kept unless the preset gives a value. */
 const KEEP_IF_EMPTY = new Set(["giver", "actor", "img", "deadline", "onDone", "link", "clue"]);
 const isEmptyVal = (v) => v === null || v === undefined || v === "" || (Array.isArray(v) && !v.length);
@@ -2129,6 +2234,58 @@ async function promptCompletion(t, goalId, { who = null, why = null } = {}) {
   });
 }
 
+/** A player followed a lead: whisper the GM a card, with what the lead can reveal that players can't see yet. */
+async function promptFollow(t, leadId, who) {
+  const lead = (t?.leads ?? []).find((l) => l.id === leadId);
+  if (!lead) return;
+  const what = shortText(lead.text, 80) || "a lead";
+  await ChatMessage.create({
+    content: `<div class="pct-chat pct-qprompt"><header><i class="${KIND_INFO.quest.icon}"></i> <strong>${esc(t.name)}</strong></header>
+      <p><strong>${esc(who)}</strong> followed <em>${esc(what)}</em>${/[.!?]$/.test(what) ? "" : "."}</p><div class="pct-qprompt-state"></div></div>`,
+    speaker: { alias: KIND_INFO.quest.label },
+    whisper: gmIds(),
+    flags: { [SCOPE]: { qfollow: { tid: t.id, lead: leadId, status: "open" } } },
+  });
+}
+
+/** The GM's choices on a follow card: tick what to reveal, then Reveal or Not yet. */
+function renderFollow(message, qf, root) {
+  const box = root.querySelector(".pct-qprompt-state");
+  if (!box) return;
+  if (qf.status !== "open") {
+    box.innerHTML = `<p class="pct-hint">${esc(qf.result || "Done.")}</p>`;
+    return;
+  }
+  if (!game.user.isGM) return;
+  const t = Store.get(qf.tid);
+  const lead = (t?.leads ?? []).find((l) => l.id === qf.lead);
+  if (!lead) {
+    box.innerHTML = `<p class="pct-hint">That lead no longer exists.</p>`;
+    return;
+  }
+  const offers = leadOffers(t, lead);
+  const undone = !lead.followed;
+  box.innerHTML = `${undone ? `<p class="pct-hint">It has been marked not followed since.</p>` : ""}${offers.length ? `<div class="pct-qprompt-rows">${offerRows(offers, !undone)}</div>` : `<p class="pct-hint">Nothing hidden to reveal.</p>`}
+    <div class="pct-req pct-req-row">${offers.length ? `<button type="button" data-act="go"><i class="fa-solid fa-eye"></i> Reveal</button>` : ""}<button type="button" data-act="skip">${offers.length ? "Not yet" : "OK"}</button></div>`;
+  box.querySelector('[data-act="go"]')?.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.currentTarget.disabled = true;
+    const keys = offers.filter((o) => box.querySelector(`input[name="${CSS.escape(o.key)}"]`)?.checked).map((o) => o.key);
+    onceFor(message, async (m) => {
+      if (m.getFlag(SCOPE, "qfollow")?.status !== "open") return;
+      const n = await revealLeadOffers(qf.tid, leadOffers(Store.get(qf.tid), (Store.get(qf.tid)?.leads ?? []).find((l) => l.id === qf.lead)), keys);
+      await m.update({ [`flags.${SCOPE}.qfollow.status`]: "done", [`flags.${SCOPE}.qfollow.result`]: n ? `Done: revealed ${n}.` : "Done." });
+    });
+  });
+  box.querySelector('[data-act="skip"]').addEventListener("click", (ev) => {
+    ev.preventDefault();
+    onceFor(message, async (m) => {
+      if (m.getFlag(SCOPE, "qfollow")?.status !== "open") return;
+      await m.update({ [`flags.${SCOPE}.qfollow.status`]: "skipped", [`flags.${SCOPE}.qfollow.result`]: offers.length ? "Left for later. Reveal from the quest when you're ready." : "Seen." });
+    });
+  });
+}
+
 /** The GM's choices on an On-completion card: tick what to reveal, then Reveal or Not yet. */
 async function renderCompletion(message, qp, root) {
   const box = root.querySelector(".pct-qprompt-state");
@@ -2247,6 +2404,8 @@ function onRenderMessage(message, html) {
   if (ad) renderAdhoc(message, ad, root);
   const qp = message.getFlag?.(SCOPE, "qprompt");
   if (qp) renderCompletion(message, qp, root);
+  const qf = message.getFlag?.(SCOPE, "qfollow");
+  if (qf) renderFollow(message, qf, root);
   for (const b of root.querySelectorAll("[data-pct-propose]")) {
     b.addEventListener("click", (ev) => {
       ev.preventDefault();
@@ -2619,6 +2778,28 @@ function goalLine(g, path, { gm, steps = null, mode = "all", tick = false, party
   return `${box}<span class="pct-qtext">${para(g.text) || (gm ? "<em>No text</em>" : "")}</span>${g.optional ? `<span class="pct-chip">optional</span>` : ""}${count}${stepNote}${link}`;
 }
 
+/** Quests whose Followed group is open, kept in this browser. */
+const FOLLOWED_KEY = `${MOD}.followedOpen`;
+const followedOpen = (() => {
+  try {
+    return new Set(JSON.parse(globalThis.localStorage?.getItem(FOLLOWED_KEY) ?? "[]"));
+  } catch {
+    return new Set();
+  }
+})();
+function onFoldToggle(ev) {
+  const d = ev.target;
+  if (!(d instanceof HTMLDetailsElement) || !d.dataset.pctFold) return;
+  if (d.open === followedOpen.has(d.dataset.pctFold)) return;
+  if (d.open) followedOpen.add(d.dataset.pctFold);
+  else followedOpen.delete(d.dataset.pctFold);
+  try {
+    localStorage.setItem(FOLLOWED_KEY, JSON.stringify([...followedOpen]));
+  } catch {
+    /* no storage: it opens closed next time */
+  }
+}
+
 /**
  * Clues in the order they're listed, each with its index in the stored list: shown ones newest revealed first (those
  * with no reveal time after, newest added first), then hidden ones, newest added first. A players' copy has only shown ones.
@@ -2659,13 +2840,26 @@ function questBody(q, { gm, party = false, all = [], open = new Set(), readOnly 
   const clues = clueOrder(q.entries);
   const entries = shownFirst(clues.shown, clues.hidden, ({ e, i }) => `<li>${gm ? eye(`entries.${i}`, e.revealed) : ""}${rl(e.id)}${e.date ? `<span class="pct-date-chip">${esc(fmtDate(e.date))}</span>` : ""}<span>${e.by ? `<strong class="pct-entry-by">${esc(e.by)}</strong> ` : ""}${para(e.text)}</span>${rlEnd(e.id)}</li>`);
   const leadRows = q.leads.map((l, i) => ({ l, i }));
-  const leads = shownFirst(leadRows.filter((r) => r.l.revealed !== false), leadRows.filter((r) => r.l.revealed === false), ({ l, i }) => {
+  // GM data names who followed by user id or "gm"; a players' copy by "gm" or "player".
+  const followBox = (l) => {
+    const on = !!l.followed;
+    const icon = on ? "fa-solid fa-square-check" : "fa-regular fa-square";
+    if (l.revealed === false) return "";
+    if (gm && can) return A("pctLeadFollow", icon, { tip: on ? "Mark not followed" : "Mark followed", data: { lead: l.id, to: on ? "open" : "done" }, cls: "pct-qbox pct-lead-box" });
+    if (tick && (!on || l.followedBy !== "gm")) return A("pctLeadFollow", icon, { tip: on ? "Mark not followed" : own ? "Mark followed" : "Mark followed. The GM is told.", data: { lead: l.id, to: on ? "open" : "done" }, cls: "pct-qbox pct-lead-box" });
+    return on ? `<i class="pct-qbox pct-lead-box ${icon}" ${tick ? `data-tooltip="Marked by the GM"` : ""}></i>` : "";
+  };
+  const leadLi = ({ l, i }) => {
     const to = gm ? all.find((x) => x.id === l.to && x.kind === "quest") : l.to;
     const clue = gm && l.clue ? (q.entries ?? []).find((e) => e.id === l.clue) : null;
     const go = (to ? `<a class="pct-qlink" data-action="pctQuestGo" data-qid="${esc(to.id)}"><i class="fa-solid fa-arrow-right"></i> ${esc(to.name)}${gm && !to.revealed ? " (hidden)" : ""}</a>` : "")
       + (clue ? `<span class="pct-qlink" data-tooltip="${esc(clue.text)}"><i class="fa-solid fa-magnifying-glass"></i> ${esc(shortText(clue.text, 30) || "clue")}${clue.revealed ? "" : " (hidden)"}</span>` : "");
-    return `<li>${gm ? eye(`leads.${i}`, l.revealed) : ""}${rl(l.id)}<i class="fa-solid fa-signs-post"></i><span>${para(l.text)}</span>${go}${rlEnd(l.id)}${gm && l.gm ? gmBox(l.gm) : ""}</li>`;
-  });
+    return `<li class="${l.followed ? "pct-followed" : ""}">${gm ? eye(`leads.${i}`, l.revealed) : ""}${rl(l.id)}${followBox(l) || `<i class="fa-solid fa-signs-post"></i>`}<span>${para(l.text)}</span>${go}${rlEnd(l.id)}${gm && l.gm ? gmBox(l.gm) : ""}</li>`;
+  };
+  const openLeads = leadRows.filter((r) => !r.l.followed);
+  const followed = leadRows.filter((r) => r.l.followed);
+  const leads = shownFirst(openLeads.filter((r) => r.l.revealed !== false), openLeads.filter((r) => r.l.revealed === false), leadLi)
+    + (followed.length ? `<li class="pct-qfollowed"><details data-pct-fold="${esc(q.id)}"${followedOpen.has(q.id) ? " open" : ""}><summary>Followed (${followed.length})</summary><ul class="pct-qleads">${followed.map(leadLi).join("")}</ul></details></li>` : "");
   const rewards = q.rewards.map((r, i) => {
     const actor = r.actor ? `<a class="pct-npc" data-action="pctOpenActor" data-uuid="${esc(r.actor.uuid)}" data-tooltip="Open the sheet">${r.actor.img ? `<img src="${esc(r.actor.img)}" alt="">` : ""}<strong>${esc(r.actor.name)}</strong></a>` : "";
     return `<li>${gm ? eye(`rewards.${i}`, r.revealed) : ""}${rl(r.id)}<i class="fa-solid fa-gem"></i><span>${para(r.text)}</span>${actor}${rlEnd(r.id)}${gm && r.gm ? gmBox(r.gm) : ""}</li>`;
@@ -4131,6 +4325,7 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
       pctRLCopy: TrackersApp.#onRLCopy,
       pctQSec: TrackersApp.#onQSec,
       pctQTick: TrackersApp.#onQTick,
+      pctLeadFollow: TrackersApp.#onLeadFollow,
       pctQNoteAdd: TrackersApp.#onQNoteAdd,
       pctQNoteJournal: TrackersApp.#onQNoteJournal,
       pctQNoteDel: TrackersApp.#onQNoteDel,
@@ -4481,6 +4676,28 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     tickToGM(t.id, target.dataset.goal, target.dataset.to);
   }
 
+  /** Mark a lead followed or not: the GM directly (then offers what it reveals), a player through the GM. */
+  static async #onLeadFollow(event, target) {
+    const t = this.trackerFor(target);
+    if (!t) return;
+    const { lead, to } = target.dataset;
+    if (this.isGM) {
+      const done = await mutateTracker(t.id, (tr) => {
+        const l = (tr.leads ?? []).find((x) => x.id === lead);
+        if (!l || l.followed === (to === "done")) return undefined;
+        l.followed = to === "done";
+        l.followedBy = l.followed ? "gm" : null;
+        return true;
+      }, { notify: false });
+      if (done && to === "done") await offerLead(t.id, lead);
+      return;
+    }
+    if (game.user.isGM) return;
+    target.classList.add("pct-busy");
+    setTimeout(() => target.classList.remove("pct-busy"), 5000);
+    followToGM(t.id, lead, to);
+  }
+
   static async #onQNoteAdd(event, target) {
     const t = this.trackerFor(target);
     const area = target.closest(".pct-qnote-add")?.querySelector("textarea");
@@ -4752,26 +4969,8 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     }, { notify: false });
     const lm = path.match(/^leads\.(\d+)\.revealed$/);
     if (now === "on" && lm) {
-      const t = Store.get(id);
-      const lead = t?.leads?.[Number(lm[1])];
-      const to = lead ? Store.data.trackers.find((x) => x.id === lead.to && x.kind === "quest" && !x.revealed) : null;
-      const clue = leadClue(t, lead);
-      const offers = [to && { name: "quest", label: `The quest it points to, ${to.name}` }, clue && { name: "clue", label: `Its clue: ${shortText(clue.text, 70) || "(no text)"}` }].filter(Boolean);
-      if (!offers.length) return;
-      const pick = await foundry.applications.api.DialogV2.wait({
-        window: { title: "Lead" },
-        content: `<p>${offers.length === 1 ? "Players can't see this yet. Reveal it too?" : "Players can't see these yet. Reveal them too?"}</p><div class="pct-rl-rows">${offers.map((o) => `<label class="pct-chk"><input type="checkbox" name="${o.name}" checked> <span>${esc(o.label)}</span></label>`).join("")}</div>`,
-        buttons: [
-          { action: "reveal", label: "Reveal", icon: "fa-solid fa-eye", default: true, callback: (ev, button) => ({ quest: !!button.form.elements.quest?.checked, clue: !!button.form.elements.clue?.checked }) },
-          { action: "cancel", label: "Not now" },
-        ],
-        rejectClose: false,
-      });
-      if (!pick || typeof pick !== "object") return;
-      if (pick.quest && to) await mutateTracker(to.id, (q) => {
-        q.revealed = true;
-      }, { notify: false });
-      if (pick.clue && clue) await mutateTracker(id, (q) => (revealRow(findRow(q, clue.id)).length ? true : undefined), { notify: false });
+      const lead = Store.get(id)?.leads?.[Number(lm[1])];
+      if (lead) await offerLead(id, lead.id);
       return;
     }
     const m = path.match(/^rewards\.(\d+)\.revealed$/);
@@ -4997,6 +5196,7 @@ Hooks.once("init", () => {
   CONFIG.TextEditor.enrichers.push({ pattern: QUEST_LINK, enricher: async (match) => enrichQuestLink(match) });
   CONFIG.TextEditor.enrichers.push({ pattern: REVEAL_LINK, enricher: async (match, options) => enrichRevealLink(match, options) });
   document.addEventListener("click", onQuestLink, true);
+  document.addEventListener("toggle", onFoldToggle, true);
   document.addEventListener("click", onRevealLink, true);
   document.addEventListener("dragover", onRevealDragOver, true);
   document.addEventListener("dragleave", onRevealDragLeave, true);
