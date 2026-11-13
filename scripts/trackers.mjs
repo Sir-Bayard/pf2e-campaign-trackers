@@ -85,7 +85,7 @@ const TPL = {
   entry: () => ({ id: uid(), group: "", label: "", detail: "", effect: "", closes: null, tag: "", done: false, revealed: false, reminded: null }),
   objective: () => ({ id: uid(), text: "", gm: "", state: "open", optional: false, count: null, have: 0, mode: "all", steps: [], onDone: [], doneBy: null, link: null, revealed: false }),
   step: () => ({ id: uid(), text: "", gm: "", state: "open", optional: false, count: null, have: 0, onDone: [], doneBy: null, link: null, revealed: false }),
-  qentry: () => ({ id: uid(), date: null, text: "", revealed: false }),
+  qentry: () => ({ id: uid(), date: null, text: "", revealed: false, revealedAt: null }),
   lead: () => ({ id: uid(), text: "", to: "", clue: "", gm: "", revealed: false }),
   reward: () => ({ id: uid(), text: "", gm: "", actor: null, revealed: false }),
 };
@@ -1070,6 +1070,7 @@ async function mutate(fn, { notify = true } = {}) {
   const draft = clone(Store.data);
   const result = fn(draft);
   draft.trackers = draft.trackers.map(normalize);
+  stampReveals(before, draft);
   Store.data = draft;
   refresh();
   if (notify) {
@@ -1083,6 +1084,24 @@ async function mutate(fn, { notify = true } = {}) {
   const saved = await Store.save();
   if (saved) for (const tr of linkTriggers(before, draft)) promptCompletion(Store.get(tr.tid), tr.goal, { why: tr.why });
   return saved ? result : undefined;
+}
+
+/** A clue keeps the time it was revealed, so the newest shows first; hiding it clears the time. */
+function stampReveals(before, after) {
+  const now = Date.now();
+  for (const t of after.trackers) {
+    if (t.kind !== "quest") continue;
+    const old = before.trackers.find((x) => x.id === t.id);
+    if (!old) continue;
+    for (const e of t.entries) {
+      if (!e.revealed) {
+        e.revealedAt = null;
+        continue;
+      }
+      const was = (old.entries ?? []).find((x) => x.id === e.id);
+      e.revealedAt = was?.revealed ? (was.revealedAt ?? null) : now;
+    }
+  }
 }
 
 const mutateTracker = (id, fn, opts) => (game.user.isGM ? mutate((d) => {
@@ -1192,7 +1211,7 @@ function project(t, { force = false, all = null } = {}) {
         giver: t.giver ? { name: t.giver.name, img: t.giver.img } : t.giverText ? { name: t.giverText, img: "" } : null,
         location: t.location, deadline: t.showDue !== false ? t.deadline : null, dueHidden: t.party && t.showDue === false ? true : undefined,
         objectives: shown(t.objectives).map((o) => ({ ...goal(o), mode: o.mode, steps: shown(o.steps).map(goal) })),
-        entries: shown(t.entries).map((e) => ({ id: e.id, date: e.date, text: e.text, by: e.by || undefined })),
+        entries: shown(t.entries).map((e) => ({ id: e.id, date: e.date, text: e.text, by: e.by || undefined, revealedAt: e.revealedAt ?? undefined })),
         leads: shown(t.leads).map((l) => {
           const q = linked(l.to);
           return { id: l.id, text: l.text, to: q ? { id: q.id, name: q.name } : null };
@@ -1270,7 +1289,7 @@ const presets = new Map();
 let storeReady = false;
 
 /** Fields that belong to play, kept when a preset's text is updated. */
-const STATE_KEYS = new Set(["value", "revealed", "round", "current", "awareness", "edge", "roundsUsed", "progress", "byActor", "done", "state", "earned", "reminded", "showValue", "showAwareness", "showLabels", "npc", "successes", "failures", "used", "log", "showCount", "adhoc", "status", "have", "pnotes", "doneBy", "focus", "showDue"]);
+const STATE_KEYS = new Set(["value", "revealed", "round", "current", "awareness", "edge", "roundsUsed", "progress", "byActor", "done", "state", "earned", "reminded", "showValue", "showAwareness", "showLabels", "npc", "successes", "failures", "used", "log", "showCount", "adhoc", "status", "have", "pnotes", "doneBy", "focus", "showDue", "revealedAt"]);
 /** Fields a preset usually leaves empty for the GM to fill in play: kept unless the preset gives a value. */
 const KEEP_IF_EMPTY = new Set(["giver", "actor", "img", "deadline", "onDone", "link", "clue"]);
 const isEmptyVal = (v) => v === null || v === undefined || v === "" || (Array.isArray(v) && !v.length);
@@ -2600,6 +2619,25 @@ function goalLine(g, path, { gm, steps = null, mode = "all", tick = false, party
   return `${box}<span class="pct-qtext">${para(g.text) || (gm ? "<em>No text</em>" : "")}</span>${g.optional ? `<span class="pct-chip">optional</span>` : ""}${count}${stepNote}${link}`;
 }
 
+/**
+ * Clues in the order they're listed, each with its index in the stored list: shown ones newest revealed first (those
+ * with no reveal time after, newest added first), then hidden ones, newest added first. A players' copy has only shown ones.
+ */
+function clueOrder(entries) {
+  const rows = (entries ?? []).map((e, i) => ({ e, i }));
+  const at = (r) => (typeof r.e.revealedAt === "number" ? r.e.revealedAt : -1);
+  return {
+    shown: rows.filter((r) => r.e.revealed !== false).sort((a, b) => at(b) - at(a) || b.i - a.i),
+    hidden: rows.filter((r) => r.e.revealed === false).reverse(),
+  };
+}
+
+/** Rows split into shown and hidden (GM) with a line between, each built from its row and index. */
+function shownFirst(shownRows, hiddenRows, li) {
+  const top = shownRows.map(li).join("");
+  return hiddenRows.length ? `${top}${top ? `<li class="pct-qsep" aria-hidden="true"></li>` : ""}${hiddenRows.map(li).join("")}` : top;
+}
+
 /** The quest's objectives (with their steps), clues, leads and rewards. `gm` adds eyes, notes and controls;
  * `open` names the sections the GM is editing in place, which show their editor instead. */
 function questBody(q, { gm, party = false, all = [], open = new Set(), readOnly = false, pick = null }) {
@@ -2618,14 +2656,16 @@ function questBody(q, { gm, party = false, all = [], open = new Set(), readOnly 
         ${gm && o.gm ? gmBox(o.gm) : ""}
         ${steps ? `<ul class="pct-qsteps"><li class="pct-k">${o.mode === "any" ? "Any one of these" : "All of these"}</li>${steps}</ul>` : ""}</li>`;
   }).join("");
-  const entries = [...q.entries].map((e, i) => ({ e, i })).reverse().map(({ e, i }) => `<li>${gm ? eye(`entries.${i}`, e.revealed) : ""}${rl(e.id)}${e.date ? `<span class="pct-date-chip">${esc(fmtDate(e.date))}</span>` : ""}<span>${e.by ? `<strong class="pct-entry-by">${esc(e.by)}</strong> ` : ""}${para(e.text)}</span>${rlEnd(e.id)}</li>`).join("");
-  const leads = q.leads.map((l, i) => {
+  const clues = clueOrder(q.entries);
+  const entries = shownFirst(clues.shown, clues.hidden, ({ e, i }) => `<li>${gm ? eye(`entries.${i}`, e.revealed) : ""}${rl(e.id)}${e.date ? `<span class="pct-date-chip">${esc(fmtDate(e.date))}</span>` : ""}<span>${e.by ? `<strong class="pct-entry-by">${esc(e.by)}</strong> ` : ""}${para(e.text)}</span>${rlEnd(e.id)}</li>`);
+  const leadRows = q.leads.map((l, i) => ({ l, i }));
+  const leads = shownFirst(leadRows.filter((r) => r.l.revealed !== false), leadRows.filter((r) => r.l.revealed === false), ({ l, i }) => {
     const to = gm ? all.find((x) => x.id === l.to && x.kind === "quest") : l.to;
     const clue = gm && l.clue ? (q.entries ?? []).find((e) => e.id === l.clue) : null;
     const go = (to ? `<a class="pct-qlink" data-action="pctQuestGo" data-qid="${esc(to.id)}"><i class="fa-solid fa-arrow-right"></i> ${esc(to.name)}${gm && !to.revealed ? " (hidden)" : ""}</a>` : "")
       + (clue ? `<span class="pct-qlink" data-tooltip="${esc(clue.text)}"><i class="fa-solid fa-magnifying-glass"></i> ${esc(shortText(clue.text, 30) || "clue")}${clue.revealed ? "" : " (hidden)"}</span>` : "");
     return `<li>${gm ? eye(`leads.${i}`, l.revealed) : ""}${rl(l.id)}<i class="fa-solid fa-signs-post"></i><span>${para(l.text)}</span>${go}${rlEnd(l.id)}${gm && l.gm ? gmBox(l.gm) : ""}</li>`;
-  }).join("");
+  });
   const rewards = q.rewards.map((r, i) => {
     const actor = r.actor ? `<a class="pct-npc" data-action="pctOpenActor" data-uuid="${esc(r.actor.uuid)}" data-tooltip="Open the sheet">${r.actor.img ? `<img src="${esc(r.actor.img)}" alt="">` : ""}<strong>${esc(r.actor.name)}</strong></a>` : "";
     return `<li>${gm ? eye(`rewards.${i}`, r.revealed) : ""}${rl(r.id)}<i class="fa-solid fa-gem"></i><span>${para(r.text)}</span>${actor}${rlEnd(r.id)}${gm && r.gm ? gmBox(r.gm) : ""}</li>`;
