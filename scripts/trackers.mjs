@@ -7,8 +7,8 @@
  * that only GMs can see; players get a copy of what has been revealed, kept in a world setting.
  * Subsystem checks are rolled through the PF2e system with a tag, and the GM applies the result
  * from the roll card. Dates on clocks, checklists and quests send the GM a whisper when the calendar
- * reaches them. Players' quest ticks and notes reach the active GM through the module socket.
- * Campaign content can be shipped by another module as a preset.
+ * reaches them. Players' quest ticks, notes and party quest edits reach the active GM through the
+ * module socket. Campaign content can be shipped by another module as a preset.
  */
 
 const MOD = "pf2e-campaign-trackers";
@@ -388,7 +388,7 @@ function rowChanges(b, a, spec) {
     if (!was) add.push({ id: r.id, ...fields });
     else if (Object.keys(fields).length) edit[r.id] = fields;
   }
-  // The order counts only when rows both copies have moved; new rows go at the end either way.
+  // Order counts only when rows in both copies changed places; new rows go at the end either way.
   const order = a.map((r) => r.id);
   const keptA = order.filter((id) => old.has(id));
   const keptB = b.map((r) => r.id).filter((id) => a.some((x) => x.id === id));
@@ -514,7 +514,7 @@ function leadClue(t, lead) {
 }
 /** Does a found row show to players? A step only with its objective. */
 const rowShown = (f) => !!f?.row?.revealed && (f.list !== "objectives.steps" || !!f.parent?.revealed);
-/** "Step: Get disguises", plus ", and the objective it sits under" when revealing it would bring its objective too. */
+/** "Step: Get disguises", plus ", and the objective it sits under (...)" when revealing it would bring that too. */
 function revealLabel(t, f) {
   const base = rowLabel(t, f.row.id);
   return f.list === "objectives.steps" && f.parent && !f.parent.revealed ? `${base}, and the objective it sits under (${shortText(f.parent.text, 50) || "no text"})` : base;
@@ -657,7 +657,9 @@ function questNotices(pub) {
 
 const SOCKET = `module.${MOD}`;
 
-/** A player's request, sent to the active GM: tick a goal, add a note, delete a note. */
+/**
+ * A player's request to the active GM (ticks, Party Journal entries, party quests). False when no GM is logged in.
+ */
 function sendToGM(msg) {
   if (!game.users.activeGM) {
     ui.notifications.warn("A GM needs to be logged in for that.");
@@ -667,10 +669,13 @@ function sendToGM(msg) {
   return true;
 }
 
-/** The active GM's client handles players' requests. Foundry gives the sender's user id with each message, so a
- * player can't speak for someone else. */
 const lastNoteAt = new Map();
 const partyRate = new Map();
+/**
+ * Module socket messages: GM tabs announcing themselves, the GM's answers to a player, and players' requests, which
+ * the lead tab of the active GM handles. Foundry gives the sender's user id with each message, so a player can't speak
+ * for someone else.
+ */
 async function onSocket(msg, senderId) {
   if (!msg?.type) return;
   const sender = game.users.get(senderId);
@@ -704,7 +709,6 @@ async function onSocket(msg, senderId) {
   if (["qnew", "qedit", "qdel"].includes(msg.type)) return partyRequest(msg, user, who, fail);
   if (msg.type === "qtick") {
     const party = partyTicks(Store.get(msg.tid));
-    // Ticks on a party quest are the party's own business: always allowed, and no card for the GM.
     if (!game.settings.get(MOD, "playerTicks") && !party) return;
     const done = await mutateTracker(msg.tid, (t) => applyQuestTick(t, msg.goal, msg.to, user.id) || undefined, { notify: false });
     if (done && msg.to === "done" && !party) await promptCompletion(Store.get(msg.tid), msg.goal, { who });
@@ -879,7 +883,10 @@ function summary(t) {
   return "";
 }
 
-/** Find a row anywhere in a tracker by id, with the list it sits in. */
+/**
+ * Find a row anywhere in a tracker by id: { row, list, path, parent }, where list is the generic path
+ * ("objectives.steps").
+ */
 function findRow(t, id) {
   const walk = (obj, path) => {
     for (const [key, val] of Object.entries(obj)) {
@@ -1052,9 +1059,9 @@ const Store = {
 };
 
 /**
- * Change the data. The function gets a copy to change and can return a value, which comes back
- * only when the change was saved (undefined otherwise). Notices about thresholds crossed and tiers
- * changed are whispered to the GM.
+ * Change the data (GM only). fn gets a copy to change and may return a value, which comes back only when the change
+ * was saved (undefined otherwise). What notices() finds is whispered to the GM, and goals whose linked tracker just
+ * got there get a completion card.
  */
 async function mutate(fn, { notify = true } = {}) {
   if (!game.user.isGM) return;
@@ -1105,7 +1112,10 @@ function partyMutate(id, fn) {
   return result;
 }
 
-/** What changed that the GM should hear about: thresholds crossed upward, tiers, cleared obstacles. */
+/**
+ * What changed that the GM should hear about: thresholds crossed upward, tier changes, a skill challenge's outcome,
+ * chase obstacles cleared and the quarry caught up with.
+ */
 function notices(a, b) {
   const out = [];
   const n = esc(b.name);
@@ -1242,7 +1252,10 @@ async function publish(data) {
   await game.settings.set(MOD, "public", pub);
 }
 
-/** Trackers as the current user sees them: everything for a GM, the revealed copy for players. */
+/**
+ * Trackers as the current user sees them: everything for a GM, the revealed copy for players (and for a GM with
+ * asPlayer).
+ */
 function visibleTrackers({ asPlayer = false } = {}) {
   if (game.user.isGM && !asPlayer) return Store.data.trackers;
   if (game.user.isGM) return Store.data.trackers.map((t) => project(t, { all: Store.data.trackers })).filter(Boolean);
@@ -2043,7 +2056,10 @@ function priorApplied(message) {
   return hit && Date.now() - hit.at < 120000 ? hit : null;
 }
 
-/** Apply, Undo and Replace run one at a time per card, on the card as it is when the click lands. */
+/**
+ * Card actions (Apply, Undo, Replace, approve, decline) run one at a time per card, on the card as it is when the
+ * click lands.
+ */
 const busyCards = new Set();
 async function onceFor(message, fn) {
   if (busyCards.has(message.id)) return;
@@ -2189,7 +2205,10 @@ async function renderCompletion(message, qp, root) {
   });
 }
 
-/** Buttons on check cards, and the GM's Apply box on tagged roll cards. */
+/**
+ * Wire up this module's chat cards: roll and propose buttons, proposals, GM check cards, completion cards, and the
+ * GM's Apply box on tagged roll cards.
+ */
 function onRenderMessage(message, html) {
   const root = html instanceof HTMLElement ? html : html?.[0];
   if (!root) return;
@@ -2319,7 +2338,10 @@ function monthIndex(name) {
   return i;
 }
 
-/** "15 Vind", "15 Vind 1534", "Vind 15" or "1534-12-15". Returns null for blank and undefined if unreadable. */
+/**
+ * A date typed against the world calendar: "15 Vind", "15 Vind 1534", "Vind 15" or "1534-12-15". Returns null for
+ * blank and undefined if unreadable.
+ */
 function parseDate(str, defYear = today().y) {
   const s = String(str ?? "").trim().replace(/\s+/g, " ");
   if (!s) return null;
@@ -2530,7 +2552,7 @@ function dueChip(date, open = true) {
 
 const GOAL_ICON = { open: "fa-regular fa-square", done: "fa-solid fa-square-check", failed: "fa-solid fa-square-xmark" };
 
-/** The quest's picture, giver, location and due date, shared by the GM's and the players' views. */
+/** The quest's picture, status, category, giver, location and due date, shared by the GM's and the players' views. */
 function questHead(q, { gm }) {
   const giver = gm
     ? q.giver
@@ -2551,7 +2573,10 @@ function questHead(q, { gm }) {
 /** Text only the GM sees on a quest, in a box marked as such. */
 const gmBox = (text) => `<div class="pct-gm pct-gmbox"><span class="pct-gmtag" data-tooltip="Only you see this"><i class="fa-solid fa-eye-slash"></i>GM</span><span>${para(text)}</span></div>`;
 
-/** An objective or step's count and its state box. The GM's box is a button; left click done, right click failed. */
+/**
+ * An objective or step as one line: state box, text, optional, count, steps and (GM) link chips. The GM's box is a
+ * button: click done, right-click failed.
+ */
 function goalLine(g, path, { gm, steps = null, mode = "all", tick = false, party = false, counts = false }) {
   const can = tick && (g.state === "open" || (g.state === "done" && g.doneBy === "player"));
   const box = gm
@@ -2876,7 +2901,10 @@ const GM = {
 /* Editing each kind                                                   */
 /* ------------------------------------------------------------------ */
 
-/** A goal's fields in the editor: what players see, the GM's note, optional, and a count. */
+/**
+ * A goal's fields in the editor: what players see, the GM's note, optional, a count, and (given the quest) its link
+ * and reveals.
+ */
 const goalEdit = (g, p, what, t) => `<div class="pct-line">${L(what, F.text(`${p}.text`, g.text, what === "Step" ? "Get disguises" : "Gain access to the castle"), "pct-grow")}${L("Count", F.num(`${p}.count`, g.count, "none", "pct-dc"))}${F.bool(`${p}.optional`, g.optional, "Optional")}</div>
     ${L("GM only", F.text(`${p}.gm`, g.gm, "What it really takes, what it turns up"), "pct-block")}${t ? `${linkEdit(g, p)}${onDoneEdit(g, p, t)}` : ""}`;
 
@@ -3418,7 +3446,7 @@ const questsOpen = () => game.user.isGM || !!game.settings.get(MOD, "playerAcces
 /** A quest as the players see it, read-only, wrapped in this module's styles; null when players can't see it. */
 function questReadOnly(id) {
   if (!questsOpen()) return null;
-  // L1: project only this quest (projecting every tracker per call made a list of quests slow for the GM).
+  // Project only this quest: projecting every tracker on each call is slow when a list asks for many quests.
   let q;
   if (game.user.isGM) {
     const t = Store.get(id);
@@ -3512,14 +3540,14 @@ function resolveReveal(questRef, partList) {
   return { q, parts, missing, questOnly: !refs.length };
 }
 
-/** Is everything a link names shown to players? A step counts as shown only with its objective. */
+/** Whether one part a link names shows to players (see rowShown). */
 const partShown = (p) => rowShown(p);
 
 /** What a click would reveal, as the checklist's rows (all ticked to start): the quest if hidden, each hidden part,
  * the objective a step sits under, the hidden quest a lead points to, and loot players can't open yet. */
 async function revealPlan({ q, parts, questOnly = false }) {
   const rows = [], already = [];
-  // M1: a link whose parts are all gone mustn't reveal the quest on its own.
+  // A link whose parts are all gone mustn't reveal the quest on its own.
   if (!q.revealed && (questOnly || parts.length)) rows.push({ name: "quest", value: q.id, label: parts.length ? "The quest itself (players see none of it yet)" : "The quest itself" });
   const leadqs = new Set(), leadcs = new Set();
   for (const p of parts) {
@@ -3569,7 +3597,10 @@ async function chooseReveal(r, plan) {
   return res && typeof res === "object" ? res : null;
 }
 
-/** The checklist's ticks. An indented row (the quest a lead points to, loot) counts only with the row above it. */
+/**
+ * The checklist's ticks. An indented row (the quest a lead points to, its clue, loot) counts only with the row above
+ * it.
+ */
 function readRevealForm(form) {
   const ticked = (n) => [...form.querySelectorAll(`input[name="${n}"]:checked`)];
   const rows = ticked("row").map((i) => i.value);
@@ -3647,7 +3678,7 @@ async function revealFromLink(questRef, partList, { ask = true, trusted = true }
       if (r.questOnly || r.parts.length) ui.notifications.info(`${esc(r.q.name)}: players already see all of that.`);
       return;
     }
-    // L1: a link a player may have written (chat, a page a player last changed) always shows the list.
+    // A link a player may have written (chat, a page a player last changed) always shows the list.
     if (!trusted) ask = true;
     if (!ask && r.missing.length) ui.notifications.warn(`${esc(r.q.name)}: nothing with the id ${r.missing.map(esc).join(", ")}.`);
     const all = (n) => plan.rows.filter((x) => x.name === n).map((x) => x.value);
@@ -3716,7 +3747,7 @@ function paintRevealLink(a) {
   }
   const tip = `${r.q ? `<strong>${esc(r.q.name)}</strong><br>` : ""}${lines.join("<br>")}`;
   const state = `${done}|${broken}`;
-  // L10: repainted on every change, so touch the link only when something about it changed.
+  // Repainted on every change, so touch the link only when something about it changed.
   if (a.dataset.tooltipHtml === tip && a.dataset.state === state && a.firstChild) return;
   a.dataset.tooltipHtml = tip;
   a.dataset.state = state;
@@ -3726,7 +3757,9 @@ function paintRevealLink(a) {
   icon.className = done ? "fa-solid fa-check" : "fa-solid fa-eye";
   a.replaceChildren(icon, document.createTextNode(a.dataset.label || "Reveal"));
 }
-/** The parts a link gets: the ones it has, then the new ones in the quest's order. Null when nothing is new. */
+/**
+ * A link's parts with the new ones after them, in the quest's order: { parts, added }, or null when nothing is new.
+ */
 function partsWithMore(t, have, add) {
   const order = revealableIds(t);
   const fresh = [...new Set(add)].filter((id) => !have.includes(id) && order.includes(id) && !RL_BAD.test(String(id)))
@@ -3772,7 +3805,7 @@ const dropBusy = new Set();
 /** Parts dropped on a reveal link in a journal page: add them to the link in the page's text. */
 async function addToRevealLink(a, droppedQuest, droppedParts) {
   if (!game.user.isGM) return;
-  // M2: a link a player may have written isn't changed by a drop (the change would make the page the GM's).
+  // A link a player may have written isn't changed by a drop (the change would make the page the GM's).
   if (a.dataset.ask === "always") return void ui.notifications.warn("This link may have been written by a player. Edit the page to change it.");
   const t = revealQuest(a.dataset.quest);
   if (!t) return void ui.notifications.warn("This reveal link's quest can't be found.");
@@ -3790,7 +3823,7 @@ async function addToRevealLink(a, droppedQuest, droppedParts) {
     const changes = {};
     let count = 0;
     const html = rewriteLinksInHTML(page.text?.content ?? "", a, next.parts);
-    // M1: a Markdown page keeps its source in text.markdown and its HTML in text.content; both must change.
+    // A Markdown page keeps its source in text.markdown and its HTML in text.content; both must change.
     const md = page.text?.format === CONST.JOURNAL_ENTRY_PAGE_FORMATS?.MARKDOWN;
     if (md) {
       const r = rewriteLinks(page.text?.markdown ?? "", a, next.parts);
@@ -3860,8 +3893,10 @@ function enrichQuestLink(match) {
   paintQuestLink(a);
   return a;
 }
-/** Draw a quest link as this user should see it now. A player who can't see the quest sees neither its name nor the
- * link's label (M1: a label could name a hidden quest), only "Unknown quest". */
+/**
+ * Draw a quest link as this user should see it. A player who can't see the quest sees neither its name nor the link's
+ * label (a label could name a hidden quest), only "Unknown quest".
+ */
 function paintQuestLink(a) {
   const q = visibleTrackers().find((t) => t.id === a.dataset.questId && t.kind === "quest");
   const open = questsOpen();
@@ -3874,7 +3909,7 @@ function paintQuestLink(a) {
   icon.className = "fa-solid fa-scroll";
   a.replaceChildren(icon, document.createTextNode(text));
 }
-/** L3: links already on screen follow reveals, renames and the trackers loading after them. */
+/** Links already on screen follow reveals, renames and the trackers loading after them. */
 function repaintQuestLinks() {
   for (const a of document.querySelectorAll("a.pct-quest-link")) paintQuestLink(a);
   for (const a of document.querySelectorAll("a.pct-reveal-link")) paintRevealLink(a);
@@ -3935,7 +3970,7 @@ async function onPanelClick(ev) {
   }
 }
 
-/** Tab, folded cards and open GM-notes boxes, kept in this browser across redraws and reopening. */
+/** Tab, shown quest, folded cards and open GM-notes boxes, kept in this browser across redraws and reopening. */
 const UI_KEY = `${MOD}.ui`;
 function loadUI() {
   try {
@@ -4283,9 +4318,9 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     this.#restoring = true;
     try {
       const pending = super.maximize();
-      // Foundry's restore animation can stall at the header's height (seen on 14.370, core windows too), and it sets
-      // the size while that runs, so the window came back as a strip. Finish the animation at once; then let anything
-      // left end before putting the size back.
+      // Foundry's restore animation can stall at the header's height (seen on Foundry 14.370, core windows too) and
+      // Foundry sets the size while it runs, which would leave the window a strip. Finish the animation at once; then
+      // let anything left end before putting the size back.
       for (const a of this.element.getAnimations?.() ?? []) {
         try {
           a.finish();
@@ -4994,10 +5029,12 @@ Hooks.once("ready", async () => {
     propose: () => proposeDialog(null),
     /** Open the window on a quest this user can see (another module's link to it, say). */
     openQuest: (id) => openQuest(id),
-    /** The quests this user can see (the GM: all of them), with what a list needs: id, name, status, its label,
-     * category, objectives done and in all (not counting optional ones; shownDone and shownTotal count only what
-     * players see), whether players can see it (GM), whether it's a party quest or the party's focus, and this
-     * user's New/Updated mark ("new", "updated" or ""). Empty for players while they can't open the trackers. */
+    /**
+     * The quests this user can see (the GM: all), as { id, name, status, statusLabel, category, done, total,
+     * shownDone, shownTotal, revealed, party, focus, mark }. done and total skip optional objectives; the shown pair
+     * counts only what players see. mark is this user's "new", "updated" or "". Empty for players while they can't
+     * open the trackers.
+     */
     quests: () => (questsOpen() ? visibleTrackers() : []).filter((t) => t.kind === "quest").map((t) => {
       const main = (t.objectives ?? []).filter((o) => !o.optional);
       const shown = game.user.isGM ? (project(t, { all: Store.data.trackers })?.objectives ?? []).filter((o) => !o.optional) : main;
