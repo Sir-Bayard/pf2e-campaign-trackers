@@ -86,7 +86,7 @@ const TPL = {
   objective: () => ({ id: uid(), text: "", gm: "", state: "open", optional: false, count: null, have: 0, mode: "all", steps: [], onDone: [], doneBy: null, link: null, revealed: false }),
   step: () => ({ id: uid(), text: "", gm: "", state: "open", optional: false, count: null, have: 0, onDone: [], doneBy: null, link: null, revealed: false }),
   qentry: () => ({ id: uid(), date: null, text: "", revealed: false, revealedAt: null, under: "" }),
-  lead: () => ({ id: uid(), text: "", to: "", clue: "", gm: "", revealed: false, followed: false, followedBy: null }),
+  lead: () => ({ id: uid(), text: "", to: "", clues: [], gm: "", revealed: false, followed: false, followedBy: null }),
   reward: () => ({ id: uid(), text: "", gm: "", actor: null, revealed: false }),
 };
 
@@ -185,8 +185,13 @@ function normalize(raw) {
     // A party quest: made by a player, editable by the whole party (through the GM's client).
     t.party = t.party && typeof t.party === "object" && t.party.by ? { by: String(t.party.by), name: String(t.party.name ?? "") } : null;
     t.pnotes = Array.isArray(t.pnotes) ? t.pnotes : [];
+    // A lead reveals clues of the same quest; an older single `clue` joins the list, and ids no longer there drop out.
+    const clueIds = new Set(t.entries.map((e) => e.id));
     for (const l of t.leads) {
-      l.clue = typeof l.clue === "string" ? l.clue : "";
+      const list = Array.isArray(l.clues) ? l.clues : [];
+      if (typeof l.clue === "string" && l.clue) list.push(l.clue);
+      delete l.clue;
+      l.clues = [...new Set(list.filter((id) => typeof id === "string" && clueIds.has(id)))];
       l.followed = !!l.followed;
       l.followedBy = l.followed && l.followedBy ? String(l.followedBy) : null;
     }
@@ -554,19 +559,17 @@ function revealRow(f) {
   }
   return out;
 }
-/** The hidden clue a lead reveals: its clue row in the same quest, or null. */
-function leadClue(t, lead) {
-  const f = lead?.clue ? findRow(t, lead.clue) : null;
-  return f?.list === "entries" && !f.row.revealed ? f.row : null;
+/** The hidden clues a lead reveals: their rows in the same quest. */
+function leadClues(t, lead) {
+  return (lead?.clues ?? []).map((id) => findRow(t, id)).filter((f) => f?.list === "entries" && !f.row.revealed).map((f) => f.row);
 }
 /** What a lead can reveal that players can't see yet: the quest it points to and its clue, each with a key. */
 function leadOffers(t, lead) {
   if (!t || !lead) return [];
   const to = Store.data.trackers.find((x) => x.id === lead.to && x.kind === "quest" && !x.revealed);
-  const clue = leadClue(t, lead);
   return [
     to && { key: "quest", kind: "quest", id: to.id, label: `The quest it points to, ${to.name}` },
-    clue && { key: `clue:${clue.id}`, kind: "clue", id: clue.id, label: `Its clue: ${shortText(clue.text, 70) || "(no text)"}` },
+    ...leadClues(t, lead).map((c) => ({ key: `clue:${c.id}`, kind: "clue", id: c.id, label: `Clue: ${shortText(c.text, 70) || "(no text)"}` })),
   ].filter(Boolean);
 }
 
@@ -1444,7 +1447,7 @@ let storeReady = false;
 /** Fields that belong to play, kept when a preset's text is updated. */
 const STATE_KEYS = new Set(["value", "revealed", "round", "current", "awareness", "edge", "roundsUsed", "progress", "byActor", "done", "state", "earned", "reminded", "showValue", "showAwareness", "showLabels", "npc", "successes", "failures", "used", "log", "showCount", "adhoc", "status", "have", "pnotes", "doneBy", "focus", "showDue", "revealedAt", "followed", "followedBy"]);
 /** Fields a preset usually leaves empty for the GM to fill in play: kept unless the preset gives a value. */
-const KEEP_IF_EMPTY = new Set(["giver", "actor", "img", "deadline", "onDone", "link", "clue", "under"]);
+const KEEP_IF_EMPTY = new Set(["giver", "actor", "img", "deadline", "onDone", "link", "clues", "under"]);
 const isEmptyVal = (v) => v === null || v === undefined || v === "" || (Array.isArray(v) && !v.length);
 
 /**
@@ -2365,8 +2368,7 @@ async function renderCompletion(message, qp, root) {
     if (f.list === "leads") {
       const to = Store.data.trackers.find((x) => x.id === f.row.to && x.kind === "quest" && !x.revealed);
       if (to) rows.push(`<label class="pct-chk pct-indent"><input type="checkbox" name="leadq" value="${esc(to.id)}" data-for="${esc(id)}" checked> <span>and reveal the quest it points to, ${esc(to.name)}</span></label>`);
-      const clue = leadClue(t, f.row);
-      if (clue && !qp.reveal.includes(clue.id) && !clues.has(clue.id) && clues.add(clue.id)) rows.push(`<label class="pct-chk pct-indent"><input type="checkbox" name="leadc" value="${esc(clue.id)}" data-for="${esc(id)}" checked> <span>and reveal its clue, ${esc(shortText(clue.text, 60) || "(no text)")}</span></label>`);
+      for (const clue of leadClues(t, f.row)) if (!qp.reveal.includes(clue.id) && !clues.has(clue.id) && clues.add(clue.id)) rows.push(`<label class="pct-chk pct-indent"><input type="checkbox" name="leadc" value="${esc(clue.id)}" data-for="${esc(id)}" checked> <span>and reveal its clue, ${esc(shortText(clue.text, 60) || "(no text)")}</span></label>`);
     }
     if (f.list === "rewards" && (await lootToOpen(t, id))) rows.push(`<label class="pct-chk pct-indent"><input type="checkbox" name="loot" value="${esc(id)}" data-for="${esc(id)}" checked> <span>and let players open ${esc(f.row.actor.name)}</span></label>`);
   }
@@ -2939,9 +2941,9 @@ function questBody(q, { gm, party = false, all = [], open = new Set(), readOnly 
   };
   const leadLi = ({ l, i }) => {
     const to = gm ? all.find((x) => x.id === l.to && x.kind === "quest") : l.to;
-    const clue = gm && l.clue ? (q.entries ?? []).find((e) => e.id === l.clue) : null;
+    const linked = gm ? (l.clues ?? []).map((id) => (q.entries ?? []).find((e) => e.id === id)).filter(Boolean) : [];
     const go = (to ? `<a class="pct-qlink" data-action="pctQuestGo" data-qid="${esc(to.id)}"><i class="fa-solid fa-arrow-right"></i> ${esc(to.name)}${gm && !to.revealed ? " (hidden)" : ""}</a>` : "")
-      + (clue ? `<span class="pct-qlink" data-tooltip="${esc(clue.text)}"><i class="fa-solid fa-magnifying-glass"></i> ${esc(shortText(clue.text, 30) || "clue")}${clue.revealed ? "" : " (hidden)"}</span>` : "");
+      + linked.map((clue) => `<span class="pct-qlink" data-tooltip="${esc(clue.text)}"><i class="fa-solid fa-magnifying-glass"></i> ${esc(shortText(clue.text, 30) || "clue")}${clue.revealed ? "" : " (hidden)"}</span>`).join("");
     return `<li class="${l.followed ? "pct-followed" : ""}">${gm ? eye(`leads.${i}`, l.revealed) : ""}${rl(l.id)}${followBox(l) || `<i class="fa-solid fa-signs-post"></i>`}<span>${para(l.text)}</span>${go}${rlEnd(l.id)}${gm && l.gm ? gmBox(l.gm) : ""}</li>`;
   };
   const openLeads = leadRows.filter((r) => !r.l.followed);
@@ -3250,6 +3252,14 @@ function linkEdit(g, p) {
 const openDetails = new Set();
 
 /** Which rows of the quest finishing this goal offers to reveal. */
+/** A lead's clues to reveal with it, as checkboxes in a fold. */
+function leadCluesEdit(l, p, t) {
+  const key = `${t.id}:${l.id}:clues`;
+  const picked = new Set(l.clues ?? []);
+  const boxes = (t.entries ?? []).map((e) => `<label class="pct-chk"><input type="checkbox" data-path="${p}.clues" data-type="idlist" value="${esc(e.id)}" ${picked.has(e.id) ? "checked" : ""}> <span>${esc(shortText(e.text, 70) || "(no text)")}${e.revealed ? "" : " (hidden)"}</span></label>`).join("");
+  return `<details class="pct-ondone" data-key="${esc(key)}" ${openDetails.has(key) ? "open" : ""}><summary>Reveals clues (${picked.size})</summary>${boxes || `<p class="pct-hint">No clues in this quest yet.</p>`}</details>`;
+}
+
 function onDoneEdit(g, p, t) {
   const rows = [];
   for (const o of t.objectives) {
@@ -3289,9 +3299,8 @@ const QEDIT = {
   },
   leads(t) {
     const others = Store.data.trackers.filter((x) => x.kind === "quest" && x.id !== t.id);
-    const clues = (t.entries ?? []).map((e) => [e.id, shortText(e.text, 40) || "(no text)"]);
-    return listEditor("leads", t.leads, (l, p) => `<div class="pct-line">${L("Lead", F.text(`${p}.text`, l.text, "A smuggler at the docks knows a way in"), "pct-grow")}${L("Points to", F.select(`${p}.to`, l.to, [["", "nothing"], ...others.map((x) => [x.id, x.name])]))}${L("Reveals clue", F.select(`${p}.clue`, l.clue, [["", "nothing"], ...clues]))}</div>
-      ${L("GM only", F.text(`${p}.gm`, l.gm), "pct-block")}`, "Lead");
+    return listEditor("leads", t.leads, (l, p) => `<div class="pct-line">${L("Lead", F.text(`${p}.text`, l.text, "A smuggler at the docks knows a way in"), "pct-grow")}${L("Points to", F.select(`${p}.to`, l.to, [["", "nothing"], ...others.map((x) => [x.id, x.name])]))}</div>
+      ${leadCluesEdit(l, p, t)}${L("GM only", F.text(`${p}.gm`, l.gm), "pct-block")}`, "Lead");
   },
   rewards: (t) => listEditor("rewards", t.rewards, (r, p) => `<div class="pct-line">${L("Reward", F.text(`${p}.text`, r.text, "200 gp and the captain's favor"), "pct-grow")}
         ${r.actor ? `<div class="pct-npc" data-drop="${p}.actor">${r.actor.img ? `<img src="${esc(r.actor.img)}" alt="">` : ""}<strong>${esc(r.actor.name)}</strong>${A("pctQClear", "fa-solid fa-xmark", { tip: "Unlink", data: { path: `${p}.actor` } })}</div>` : `<div class="pct-npc pct-drop" data-drop="${p}.actor"><i class="fa-solid fa-box-open"></i> Drop a loot actor</div>`}</div>
@@ -3891,8 +3900,8 @@ async function revealPlan({ q, parts, questOnly = false }) {
         leadqs.add(to.id);
         rows.push({ name: "leadq", value: to.id, label: `and reveal the quest it points to, ${to.name}`, indent: true, for: p.id });
       }
-      const clue = leadClue(q, p.row);
-      if (clue && !leadcs.has(clue.id) && !parts.some((x) => x.row.id === clue.id)) {
+      for (const clue of leadClues(q, p.row)) {
+        if (leadcs.has(clue.id) || parts.some((x) => x.row.id === clue.id)) continue;
         leadcs.add(clue.id);
         rows.push({ name: "leadc", value: clue.id, label: `and reveal its clue, ${shortText(clue.text, 60) || "(no text)"}`, indent: true, for: p.id });
       }
