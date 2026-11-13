@@ -1,6 +1,6 @@
 # PF2e Campaign Trackers
 
-A quest log, GM Core's subsystems and a few table-neutral trackers in one window: Quests, Reputation, Pressure, Victory Points, Skill Challenges, Influence, Research, Chases, Infiltration, Clocks and Checklists. Everything is hidden from players until the GM reveals it. Quests have objectives with steps, leads between quests and reveals prepared for when something is done; players can tick objectives, add notes and start party quests of their own, and a panel keeps the party's quests on screen. Checks roll through the PF2e system and the GM applies the result from the roll card. In a skill challenge, or in ordinary play from a hotbar macro, players can propose a check and the GM approves it with a DC on the spot. Dates on clocks, checklists and quests send the GM a whisper when the calendar reaches them. Other modules can ship campaign content as a preset.
+A quest log, GM Core's subsystems and a few table-neutral trackers in one window: Quests, Reputation, Pressure, Victory Points, Skill Challenges, Influence, Research, Chases, Infiltration, Clocks and Checklists. Everything is hidden from players until the GM reveals it. Quests have objectives with steps, clues, leads between quests and reveals prepared for when something is done; players can tick objectives, write in a quest's Party Journal and start party quests of their own, and a panel keeps the party's quests on screen. Checks roll through the PF2e system and the GM applies the result from the roll card. In a skill challenge, or in ordinary play from a hotbar macro, players can propose a check and the GM approves it with a DC on the spot. Dates on clocks, checklists and quests send the GM a whisper when the calendar reaches them. Other modules can ship campaign content as a preset.
 
 ## What it looks like
 
@@ -13,7 +13,7 @@ One window, a tab for each kind of tracker. Everything starts hidden: reveal a t
 </tr>
 <tr>
 <td valign="top"><b>Quests</b>, as the GM sees it: the list by status, objectives with steps, a link to another tracker, hidden parts and notes only the GM sees.</td>
-<td valign="top">The same quest in the players' window: what's been revealed, boxes to tick, and the party's notes.</td>
+<td valign="top">The same quest in the players' window: what's been revealed, boxes to tick, and the Party Journal.</td>
 </tr>
 </table>
 <table>
@@ -107,7 +107,7 @@ The window remembers its size and place, its tab, which cards are folded and whi
 
 ## The tabs
 
-- **Quests**: A quest log: objectives with steps, a journal, leads to other quests, rewards, due dates, and notes from the players. See [Quests](#quests).
+- **Quests**: A quest log: objectives with steps, clues, leads to other quests, rewards, due dates, and a Party Journal the players write in. See [Quests](#quests).
 - **Reputation**: A number with named tiers. Starts with GM Core's tiers (Hunted to Revered, -50 to +50); change them to your own. Each tier has text players see and text only you see.
 - **Pressure**: Something building against the party: heat, alarm, suspicion, doom. A number in named bands, each with text for players and for you, plus events at set values. You move it with + and -; it has no checks. Hidden number by default, and a Halve button.
 - **Victory Points**: Progress the party earns with checks toward a goal, with thresholds along the way.
@@ -208,18 +208,18 @@ A quest log for the party: what they've taken on, what's next, what they've lear
 - A status (Lead, Active, Completed or Failed) and a category you name (Main and Side to start). Completed quests show green in the list and failed ones red.
 - A picture, who gave it (drop an actor, or type a name), where, and a due date.
 - **Objectives**, each with optional **steps** under it. An objective with steps is ready to mark done when all of them are, or when any one is (you choose). Objectives and steps can be optional and can have a count ("3 of 5 keys").
-- **Journal** entries, each with a date, for what happened along the way.
-- **Leads**: a line of text that can point to another quest.
+- **Clues**: what the party has learned, each with a date if you like.
+- **Leads**: a line of text that can point to another quest, and reveal a clue.
 - **Rewards**: text, and a loot actor if it's treasure.
 - Notes only you see, on the quest and on each objective, step, lead and reward. They show in a purple box marked GM, so they never read as something players see.
 
 The pencil on a quest edits all of it. Each section also has its own pencil and +, so you can add an objective or a GM note without opening the rest.
 
-**Running it.** Click an objective's box to mark it done, click again to open it; right-click marks it failed (struck through in red). Each objective, step, journal entry, lead and reward has an eye: reveal it when the players should know.
+**Running it.** Click an objective's box to mark it done, click again to open it; right-click marks it failed (struck through in red). Each objective, step, clue, lead and reward has an eye: reveal it when the players should know.
 
-**What happens when something is done.** In an objective or step's editor, "When it's done, offer to reveal" lists the parts you want revealed once it's done: the next objective, a journal entry, a lead. When it's marked done, you get a whispered card with those parts ticked; untick any, then Reveal. The card also offers to mark the objective done once its steps add up. Nothing is revealed until you click.
+**What happens when something is done.** In an objective or step's editor, "When it's done, offer to reveal" lists the parts you want revealed once it's done: the next objective, a clue, a lead. When it's marked done, you get a whispered card with those parts ticked; untick any, then Reveal. The card also offers to mark the objective done once its steps add up. Nothing is revealed until you click.
 
-**Leads between quests.** A lead can point to another quest. When you reveal a lead whose quest players can't see yet, you're asked whether to reveal that quest too. A quest shows which leads point to it, so you can follow a thread back.
+**Leads.** A lead can point to another quest, and can reveal one of the quest's clues ("Reveals clue" in its editor). When you reveal a lead whose quest or clue players can't see yet, you're offered both, ticked; the completion card and reveal links offer them the same way. A quest shows which leads point to it, so you can follow a thread back.
 
 **Linking to other trackers.** With "Watch" in its editor, an objective or step can watch another tracker: a clock filling, a skill challenge won or lost, victory points, research, influence, reputation or pressure reaching a number, a checklist entry ticked, a chase won, an infiltration's objective reached. It shows how that tracker stands ("Rally the Village: 6 of 8"), and when it gets there you get a card offering to mark it done. It never ticks itself.
 
@@ -231,13 +231,13 @@ The pencil on a quest edits all of it. Each section also has its own pencil and 
 
 - Read what you've revealed, and nothing else: no GM notes, no hidden objectives, steps or leads. A lead names the quest it points to only once that quest is revealed.
 - Tick a revealed objective or step done. You get a card each time, with anything you prepared to reveal. They can untick what a player ticked, but not what you marked. Turn this off with the setting "Players can tick quest objectives".
-- Add notes to a quest, signed with their character's name. Everyone sees them. Players delete their own; you can delete any. The book on a note adds it to the quest's journal, dated today, revealed and signed with the player's name, so a good find becomes part of the record. A gold book means it's already there.
+- Write in a quest's **Party Journal**, signed with their character's name. Everyone sees it. Players delete their own entries; you can delete any. The magnifying glass on an entry makes it a clue, dated today, revealed and signed with the player's name, so a good find becomes part of the record. A gold one means it's already a clue.
 - Start party quests of their own (below).
-- Players' ticks, notes and party quests go through a GM's client, so a GM needs to be logged in for them.
+- Players' ticks, Party Journal entries and party quests go through a GM's client, so a GM needs to be logged in for them.
 
-**Party quests.** Players can start a quest themselves with **New quest** on the Quests tab, for anything they want to keep track of, so you aren't the only one making and keeping quests. Anyone in the party can edit a party quest: its name, summary, status, category, giver, place and due date, its objectives and steps, journal, leads and rewards. What they add is revealed. Only the player who made it, or you, can delete it. The rest of the party gets a notice when one is made; edits only mark it Updated. Party quests have a party icon in the list.
+**Party quests.** Players can start a quest themselves with **New quest** on the Quests tab, for anything they want to keep track of, so you aren't the only one making and keeping quests. Anyone in the party can edit a party quest: its name, summary, status, category, giver, place and due date, its objectives and steps, clues, leads and rewards. What they add is revealed. Only the player who made it, or you, can delete it. The rest of the party gets a notice when one is made; edits only mark it Updated. Party quests have a party icon in the list.
 
-A party quest is yours to edit too, and you can add hidden parts and GM notes that players can't see or change. Two buttons sit on it: **Make it a main quest** sets its category to Main and leaves it a party quest; **Take it over** makes it an ordinary quest of yours, with everything in it kept. Players still see it, go back to ticking and adding notes, and are told you took it over. Turn party quests off with the setting "Players can make quests".
+A party quest is yours to edit too, and you can add hidden parts and GM notes that players can't see or change. Two buttons sit on it: **Make it a main quest** sets its category to Main and leaves it a party quest; **Take it over** makes it an ordinary quest of yours, with everything in it kept. Players still see it, go back to ticking and writing in the Party Journal, and are told you took it over. Turn party quests off with the setting "Players can make quests".
 
 <table>
 <tr>
@@ -284,7 +284,7 @@ game.modules.get("pf2e-campaign-trackers").api.registerPreset({
 
 They are added hidden the first time. When the version changes, their text is updated and values, progress, ticks and reveals are kept (for a skill challenge, its counts, the uses of each approach and the list of results). Tiers, thresholds, checks, segments and entries you added yourself stay (so do ones the preset dropped; remove those by hand). "Presets" at the bottom of the tab list reloads a preset's text by hand.
 
-For quests, an update keeps the status, ticks, counts, reveals, party notes, the focus and the "Players see the due date" switch. A giver, picture, due date, loot actor, planned reveals or link you set in play stays unless the preset gives its own. A lead's `to` and an objective's `link.tid` can name another tracker in the same preset by its key; it's matched to that tracker's stored id.
+For quests, an update keeps the status, ticks, counts, reveals, the Party Journal, the focus and the "Players see the due date" switch. A giver, picture, due date, loot actor, planned reveals or link you set in play stays unless the preset gives its own. A lead's `to` and an objective's `link.tid` can name another tracker in the same preset by its key; it's matched to that tracker's stored id.
 
 ## For macros
 

@@ -17,7 +17,7 @@ const SCOPE = MOD;
 
 const KINDS = ["quest", "reputation", "pressure", "points", "challenge", "influence", "research", "chase", "infiltration", "clock", "checklist"];
 const KIND_INFO = {
-  quest: { label: "Quest", tab: "Quests", icon: "fa-solid fa-scroll", blurb: "The party's quests and leads: objectives with steps, journal entries, leads to other quests and rewards, each revealed when you choose." },
+  quest: { label: "Quest", tab: "Quests", icon: "fa-solid fa-scroll", blurb: "The party's quests and leads: objectives with steps, clues, leads to other quests and rewards, each revealed when you choose." },
   reputation: { label: "Reputation", tab: "Reputation", icon: "fa-solid fa-scale-balanced", blurb: "How a group regards the party, in named tiers. GM Core's Reputation subsystem, or your own tiers." },
   pressure: { label: "Pressure track", tab: "Pressure", icon: "fa-solid fa-gauge-high", blurb: "Something building against the party, in named bands: heat, alarm, suspicion, doom. You move it by judgment; it has no checks." },
   points: { label: "Victory Points", tab: "Victory Points", icon: "fa-solid fa-flag-checkered", blurb: "Progress the party earns with checks toward a goal, with thresholds along the way." },
@@ -86,7 +86,7 @@ const TPL = {
   objective: () => ({ id: uid(), text: "", gm: "", state: "open", optional: false, count: null, have: 0, mode: "all", steps: [], onDone: [], doneBy: null, link: null, revealed: false }),
   step: () => ({ id: uid(), text: "", gm: "", state: "open", optional: false, count: null, have: 0, onDone: [], doneBy: null, link: null, revealed: false }),
   qentry: () => ({ id: uid(), date: null, text: "", revealed: false }),
-  lead: () => ({ id: uid(), text: "", to: "", gm: "", revealed: false }),
+  lead: () => ({ id: uid(), text: "", to: "", clue: "", gm: "", revealed: false }),
   reward: () => ({ id: uid(), text: "", gm: "", actor: null, revealed: false }),
 };
 
@@ -185,6 +185,7 @@ function normalize(raw) {
     // A party quest: made by a player, editable by the whole party (through the GM's client).
     t.party = t.party && typeof t.party === "object" && t.party.by ? { by: String(t.party.by), name: String(t.party.name ?? "") } : null;
     t.pnotes = Array.isArray(t.pnotes) ? t.pnotes : [];
+    for (const l of t.leads) l.clue = typeof l.clue === "string" ? l.clue : "";
     for (const o of t.objectives) {
       fixGoal(o);
       if (o.mode !== "any") o.mode = "all";
@@ -357,7 +358,7 @@ const PARTY_ROWS = {
 const PARTY_MAX = { objectives: 40, steps: 20, entries: 100, leads: 30, rewards: 30 };
 /** The most party quests one player may have made, and how long (as JSON) a player's edit may make a quest. */
 const PARTY_PER_PLAYER = 20, PARTY_QUEST_SIZE = 64000;
-/** Every row id in a quest: objectives, their steps, journal entries, leads and rewards. */
+/** Every row id in a quest: objectives, their steps, clues, leads and rewards. */
 const questIds = (t) => new Set([...Object.keys(PARTY_ROWS).flatMap((l) => (t[l] ?? []).map((r) => r.id)), ...(t.objectives ?? []).flatMap((o) => (o.steps ?? []).map((x) => x.id))]);
 const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 
@@ -471,7 +472,7 @@ function setRowFields(r, fields, spec, makeId, taken) {
   if (spec.nested && fields[spec.nested]) r[spec.nested] = applyRows(r[spec.nested] ?? [], fields[spec.nested], STEP_ROWS, PARTY_MAX.steps, makeId, taken);
 }
 
-/** Add a party note (anyone) or delete one (its author, or the GM). Changes `t` in place; true when it changed. */
+/** Add a Party Journal entry (anyone) or delete one (its author, or the GM). Changes `t` in place; true when it changed. */
 function applyQuestNote(t, op, { id = null, by, name = "", text = "", isGM = false } = {}) {
   if (t?.kind !== "quest") return false;
   t.pnotes = Array.isArray(t.pnotes) ? t.pnotes : [];
@@ -490,7 +491,7 @@ function applyQuestNote(t, op, { id = null, by, name = "", text = "", isGM = fal
   return false;
 }
 
-const ROW_KIND = { objectives: "Objective", "objectives.steps": "Step", entries: "Journal", leads: "Lead", rewards: "Reward" };
+const ROW_KIND = { objectives: "Objective", "objectives.steps": "Step", entries: "Clue", leads: "Lead", rewards: "Reward" };
 /** Reveal a found row (findRow's result). A step brings the objective it sits under, since players see nothing of a
  * step under a hidden objective. Returns the lists of what it revealed. */
 function revealRow(f) {
@@ -505,6 +506,11 @@ function revealRow(f) {
     out.push("objectives");
   }
   return out;
+}
+/** The hidden clue a lead reveals: its clue row in the same quest, or null. */
+function leadClue(t, lead) {
+  const f = lead?.clue ? findRow(t, lead.clue) : null;
+  return f?.list === "entries" && !f.row.revealed ? f.row : null;
 }
 /** Does a found row show to players? A step only with its objective. */
 const rowShown = (f) => !!f?.row?.revealed && (f.list !== "objectives.steps" || !!f.parent?.revealed);
@@ -639,7 +645,7 @@ function questNotices(pub) {
     if (old) {
       const had = new Set((old.pnotes ?? []).map((x) => x.id));
       const added = (q.pnotes ?? []).filter((x) => !had.has(x.id) && x.by !== game.user.id);
-      if (added.length) lines.push(`${esc(added.at(-1).name)} added a note to ${esc(q.name)}`);
+      if (added.length) lines.push(`${esc(added.at(-1).name)} wrote in the Party Journal of ${esc(q.name)}`);
     }
   }
   if (!lines.length) return;
@@ -708,12 +714,12 @@ async function onSocket(msg, senderId) {
     }
   } else if (msg.type === "qnote") {
     const now = Date.now();
-    if (now - (lastNoteAt.get(user.id) ?? 0) < 2000) return fail("One note at a time, please. Try again in a moment.");
+    if (now - (lastNoteAt.get(user.id) ?? 0) < 2000) return fail("One entry at a time, please. Try again in a moment.");
     lastNoteAt.set(user.id, now);
     const t = Store.get(msg.tid);
-    if ((t?.pnotes?.length ?? 0) >= NOTE_MAX) return fail(`${esc(t.name)} has ${NOTE_MAX} notes, the most it holds. Delete some first.`);
+    if ((t?.pnotes?.length ?? 0) >= NOTE_MAX) return fail(`The Party Journal of ${esc(t.name)} has ${NOTE_MAX} entries, the most it holds. Delete some first.`);
     const added = await mutateTracker(msg.tid, (tr) => applyQuestNote(tr, "add", { by: user.id, name: who, text: msg.text }) || undefined, { notify: false });
-    if (!added) fail("Your note didn't go through. Try again.");
+    if (!added) fail("Your entry didn't go through. Try again.");
   } else if (msg.type === "qnoteDel") {
     await mutateTracker(msg.tid, (t) => applyQuestNote(t, "delete", { id: msg.note, by: user.id }) || undefined, { notify: false });
   }
@@ -1253,7 +1259,7 @@ let storeReady = false;
 /** Fields that belong to play, kept when a preset's text is updated. */
 const STATE_KEYS = new Set(["value", "revealed", "round", "current", "awareness", "edge", "roundsUsed", "progress", "byActor", "done", "state", "earned", "reminded", "showValue", "showAwareness", "showLabels", "npc", "successes", "failures", "used", "log", "showCount", "adhoc", "status", "have", "pnotes", "doneBy", "focus", "showDue"]);
 /** Fields a preset usually leaves empty for the GM to fill in play: kept unless the preset gives a value. */
-const KEEP_IF_EMPTY = new Set(["giver", "actor", "img", "deadline", "onDone", "link"]);
+const KEEP_IF_EMPTY = new Set(["giver", "actor", "img", "deadline", "onDone", "link", "clue"]);
 const isEmptyVal = (v) => v === null || v === undefined || v === "" || (Array.isArray(v) && !v.length);
 
 /**
@@ -1686,6 +1692,18 @@ async function proposeDialog(tid, fallback = {}) {
   });
 }
 
+/**
+ * A proposal card's flags as far as they can be trusted. The player owns the message and can change its flags, so
+ * an answer (approved, declined, rolled) counts only when a GM changed the message last; otherwise it's still waiting.
+ */
+function proposalOf(message) {
+  const prop = message?.getFlag?.(SCOPE, "proposal");
+  if (!prop || prop.status === "pending") return prop ?? null;
+  if (game.users.get(message._stats?.lastModifiedBy)?.isGM) return prop;
+  const { finalSkill, dc, target, checkId, title, rolled, reason, ...rest } = prop;
+  return { ...rest, status: "pending" };
+}
+
 /** The live part of a proposal card: the GM's controls while it waits, then the roll button or the answer. */
 function renderProposal(message, prop, root) {
   const box = root.querySelector(".pct-prop-state");
@@ -1778,7 +1796,7 @@ function proposalControls(message, prop, actor) {
     ev.currentTarget.disabled = true;
     const reason = $("reason").value.trim();
     onceFor(message, async (m) => {
-      if (m.getFlag(SCOPE, "proposal")?.status !== "pending") return;
+      if (proposalOf(m)?.status !== "pending") return;
       await m.update({ [`flags.${SCOPE}.proposal`]: { ...prop, status: "declined", reason } });
     });
   });
@@ -1787,7 +1805,7 @@ function proposalControls(message, prop, actor) {
 
 /** Approve a free-play proposal: the skill and DC, and the roll button for its character. */
 async function approveFree(message, prop, { skill, dc }) {
-  if (!game.user.isGM || message.getFlag(SCOPE, "proposal")?.status !== "pending") return;
+  if (!game.user.isGM || proposalOf(message)?.status !== "pending") return;
   const id = foundry.utils.randomID(10);
   await message.update({ [`flags.${SCOPE}.proposal`]: { ...prop, status: "approved", finalSkill: skill, dc, target: id, checkId: id, title: shortText(prop.what) || skillLabel(skill) } });
 }
@@ -1800,7 +1818,7 @@ async function approveFree(message, prop, { skill, dc }) {
 async function approveProposal(message, prop, { skill, dc, approach, save }) {
   const t = Store.get(prop.tid);
   if (!t || !game.user.isGM) return;
-  if (message.getFlag(SCOPE, "proposal")?.status !== "pending") return;
+  if (proposalOf(message)?.status !== "pending") return;
   const what = shortText(prop.what) || skillLabel(skill);
   let linked = approach ? t.approaches.find((x) => x.id === approach) ?? null : null;
   let added = null;
@@ -2090,7 +2108,7 @@ async function renderCompletion(message, qp, root) {
     box.innerHTML = `<p class="pct-hint">That quest no longer exists.</p>`;
     return;
   }
-  const rows = [];
+  const rows = [], clues = new Set();
   const reopened = !qp.self && findGoal(t, qp.goal)?.g.state !== "done";
   if (qp.self) {
     const sg = findGoal(t, qp.self)?.g;
@@ -2107,6 +2125,8 @@ async function renderCompletion(message, qp, root) {
     if (f.list === "leads") {
       const to = Store.data.trackers.find((x) => x.id === f.row.to && x.kind === "quest" && !x.revealed);
       if (to) rows.push(`<label class="pct-chk pct-indent"><input type="checkbox" name="leadq" value="${esc(to.id)}" data-for="${esc(id)}" checked> <span>and reveal the quest it points to, ${esc(to.name)}</span></label>`);
+      const clue = leadClue(t, f.row);
+      if (clue && !qp.reveal.includes(clue.id) && !clues.has(clue.id) && clues.add(clue.id)) rows.push(`<label class="pct-chk pct-indent"><input type="checkbox" name="leadc" value="${esc(clue.id)}" data-for="${esc(id)}" checked> <span>and reveal its clue, ${esc(shortText(clue.text, 60) || "(no text)")}</span></label>`);
     }
     if (f.list === "rewards" && (await lootToOpen(t, id))) rows.push(`<label class="pct-chk pct-indent"><input type="checkbox" name="loot" value="${esc(id)}" data-for="${esc(id)}" checked> <span>and let players open ${esc(f.row.actor.name)}</span></label>`);
   }
@@ -2120,7 +2140,7 @@ async function renderCompletion(message, qp, root) {
     const ids = pick("reveal");
     // An indented "and ..." row counts only with the reveal above it.
     const under = (n) => [...box.querySelectorAll(`input[name="${n}"]:checked`)].filter((i) => !i.dataset.for || ids.includes(i.dataset.for)).map((i) => i.value);
-    const loot = under("loot"), leadq = under("leadq"), doParent = !!box.querySelector('input[name="parent"]:checked'), doSelf = !!box.querySelector('input[name="self"]:checked');
+    const loot = under("loot"), leadq = under("leadq"), leadc = under("leadc"), doParent = !!box.querySelector('input[name="parent"]:checked'), doSelf = !!box.querySelector('input[name="self"]:checked');
     onceFor(message, async (m) => {
       if (m.getFlag(SCOPE, "qprompt")?.status !== "open") return;
       let revealedN = 0;
@@ -2138,7 +2158,7 @@ async function renderCompletion(message, qp, root) {
             sg.doneBy = "gm";
           }
         }
-        for (const id of ids) revealedN += revealRow(findRow(tr, id)).length;
+        for (const id of [...ids, ...leadc]) revealedN += revealRow(findRow(tr, id)).length;
         if (doParent) {
           const pg = findGoal(tr, qp.parent)?.g;
           if (pg && pg.state === "open") {
@@ -2183,7 +2203,7 @@ function onRenderMessage(message, html) {
       });
     }
   }
-  const prop = message.getFlag?.(SCOPE, "proposal");
+  const prop = proposalOf(message);
   if (prop) renderProposal(message, prop, root);
   const ad = message.getFlag?.(SCOPE, "adhoc");
   if (ad) renderAdhoc(message, ad, root);
@@ -2555,7 +2575,7 @@ function goalLine(g, path, { gm, steps = null, mode = "all", tick = false, party
   return `${box}<span class="pct-qtext">${para(g.text) || (gm ? "<em>No text</em>" : "")}</span>${g.optional ? `<span class="pct-chip">optional</span>` : ""}${count}${stepNote}${link}`;
 }
 
-/** The quest's objectives (with their steps), journal, leads and rewards. `gm` adds eyes, notes and controls;
+/** The quest's objectives (with their steps), clues, leads and rewards. `gm` adds eyes, notes and controls;
  * `open` names the sections the GM is editing in place, which show their editor instead. */
 function questBody(q, { gm, party = false, all = [], open = new Set(), readOnly = false, pick = null }) {
   // The GM's reveal-link tools: while picking parts for a link, a toggle in front of each part; otherwise a link
@@ -2576,7 +2596,9 @@ function questBody(q, { gm, party = false, all = [], open = new Set(), readOnly 
   const entries = [...q.entries].map((e, i) => ({ e, i })).reverse().map(({ e, i }) => `<li>${gm ? eye(`entries.${i}`, e.revealed) : ""}${rl(e.id)}${e.date ? `<span class="pct-date-chip">${esc(fmtDate(e.date))}</span>` : ""}<span>${e.by ? `<strong class="pct-entry-by">${esc(e.by)}</strong> ` : ""}${para(e.text)}</span>${rlEnd(e.id)}</li>`).join("");
   const leads = q.leads.map((l, i) => {
     const to = gm ? all.find((x) => x.id === l.to && x.kind === "quest") : l.to;
-    const go = to ? `<a class="pct-qlink" data-action="pctQuestGo" data-qid="${esc(to.id)}"><i class="fa-solid fa-arrow-right"></i> ${esc(to.name)}${gm && !to.revealed ? " (hidden)" : ""}</a>` : "";
+    const clue = gm && l.clue ? (q.entries ?? []).find((e) => e.id === l.clue) : null;
+    const go = (to ? `<a class="pct-qlink" data-action="pctQuestGo" data-qid="${esc(to.id)}"><i class="fa-solid fa-arrow-right"></i> ${esc(to.name)}${gm && !to.revealed ? " (hidden)" : ""}</a>` : "")
+      + (clue ? `<span class="pct-qlink" data-tooltip="${esc(clue.text)}"><i class="fa-solid fa-magnifying-glass"></i> ${esc(shortText(clue.text, 30) || "clue")}${clue.revealed ? "" : " (hidden)"}</span>` : "");
     return `<li>${gm ? eye(`leads.${i}`, l.revealed) : ""}${rl(l.id)}<i class="fa-solid fa-signs-post"></i><span>${para(l.text)}</span>${go}${rlEnd(l.id)}${gm && l.gm ? gmBox(l.gm) : ""}</li>`;
   }).join("");
   const rewards = q.rewards.map((r, i) => {
@@ -2586,7 +2608,7 @@ function questBody(q, { gm, party = false, all = [], open = new Set(), readOnly 
   const notes = partyNotes(q, { gm, readOnly });
   if (!gm && !party) {
     return `${objectives ? `<div class="pct-sub">Objectives</div><ul class="pct-qgoals">${objectives}</ul>` : ""}
-      ${entries ? `<div class="pct-sub">Journal</div><ul class="pct-qjournal">${entries}</ul>` : ""}
+      ${entries ? `<div class="pct-sub">Clues</div><ul class="pct-qjournal">${entries}</ul>` : ""}
       ${leads ? `<div class="pct-sub">Leads</div><ul class="pct-qleads">${leads}</ul>` : ""}
       ${rewards ? `<div class="pct-sub">Rewards</div><ul class="pct-qrewards">${rewards}</ul>` : ""}
       ${notes}`;
@@ -2601,22 +2623,22 @@ function questBody(q, { gm, party = false, all = [], open = new Set(), readOnly 
   const from = all.flatMap((x) => (x.kind === "quest" && x.id !== q.id ? x.leads.filter((l) => l.to === q.id).map((l) => ({ x, l })) : []));
   const fromHtml = gm && from.length ? `<div class="pct-qfrom"><span class="pct-k">Pointed to by</span>${from.map(({ x, l }) => `<a class="pct-qlink" data-action="pctQuestGo" data-qid="${esc(x.id)}" data-tooltip="${esc(l.text)}">${l.revealed ? "" : `<i class="fa-solid fa-eye-slash"></i> `}${esc(x.name)}</a>`).join("")}</div>` : "";
   return `${section("objectives", "Objectives", "objectives", "an objective", objectives, "pct-qgoals")}
-    ${section("entries", "Journal", "entries", "a journal entry", entries, "pct-qjournal")}
+    ${section("entries", "Clues", "entries", "a clue", entries, "pct-qjournal")}
     ${section("leads", "Leads", "leads", "a lead", leads, "pct-qleads")}${fromHtml}
     ${section("rewards", "Rewards", "rewards", "a reward", rewards, "pct-qrewards")}
     ${notes}`;
 }
 
-/** The party's shared notes on a quest: anyone adds one, signed; its author or the GM deletes it. */
+/** The quest's Party Journal: anyone writes an entry, signed; its author or the GM deletes it. */
 function partyNotes(q, { gm, readOnly = false }) {
   const preview = readOnly || (!gm && game.user.isGM);
-  const inJournal = (n) => (q.entries ?? []).some((e) => e.from === n.id);
-  const toJournal = (n) => (!gm ? "" : inJournal(n)
-    ? `<i class="fa-solid fa-book pct-qnote-kept" data-tooltip="In the journal"></i>`
-    : A("pctQNoteJournal", "fa-solid fa-book", { tip: "Add to the journal: dated today, revealed, signed with this name", data: { note: n.id } }));
-  const rows = (q.pnotes ?? []).map((n) => `<li><strong>${esc(n.name)}</strong><span>${para(n.text)}</span>${toJournal(n)}${!preview && (gm || n.by === game.user.id) ? A("pctQNoteDel", "fa-solid fa-xmark", { tip: "Delete this note", data: { note: n.id } }) : ""}</li>`).join("");
-  return `<div class="pct-qnotes"><div class="pct-sub">Party notes</div>${rows ? `<ul>${rows}</ul>` : `<p class="pct-hint">No notes yet.${gm ? "" : " Anything the party wants to remember goes here."}</p>`}
-      ${preview ? "" : `<div class="pct-qnote-add"><textarea rows="2" placeholder="${gm ? "A note, signed GM" : "Add a note for the party"}" maxlength="${NOTE_LEN}"></textarea>${A("pctQNoteAdd", "fa-solid fa-plus", { label: "Add note" })}</div>`}</div>`;
+  const isClue = (n) => (q.entries ?? []).some((e) => e.from === n.id);
+  const toClue = (n) => (!gm ? "" : isClue(n)
+    ? `<i class="fa-solid fa-magnifying-glass pct-qnote-kept" data-tooltip="A clue"></i>`
+    : A("pctQNoteJournal", "fa-solid fa-magnifying-glass", { tip: "Make it a clue: dated today, revealed, signed with this name", data: { note: n.id } }));
+  const rows = (q.pnotes ?? []).map((n) => `<li><strong>${esc(n.name)}</strong><span>${para(n.text)}</span>${toClue(n)}${!preview && (gm || n.by === game.user.id) ? A("pctQNoteDel", "fa-solid fa-xmark", { tip: "Delete this entry", data: { note: n.id } }) : ""}</li>`).join("");
+  return `<div class="pct-qnotes"><div class="pct-sub">Party Journal</div>${rows ? `<ul>${rows}</ul>` : `<p class="pct-hint">Nothing yet.${gm ? "" : " Anything the party wants to remember goes here."}</p>`}
+      ${preview ? "" : `<div class="pct-qnote-add"><textarea rows="2" placeholder="${gm ? "An entry, signed GM" : "Write in the Party Journal"}" maxlength="${NOTE_LEN}"></textarea>${A("pctQNoteAdd", "fa-solid fa-plus", { label: "Add" })}</div>`}</div>`;
 }
 
 /** A party quest in a player's window: the same sections as the GM's, with the editors players may use. */
@@ -2635,7 +2657,7 @@ function partyLine(t, gm) {
   if (!t.party) return "";
   const by = t.party.by === game.user.id ? "you" : t.party.name || "a player";
   const tools = gm
-    ? `<span class="pct-partytools">${t.category !== "Main" ? A("pctQMain", "fa-solid fa-flag", { label: "Make it a main quest", tip: "Set its category to Main. It stays a party quest." }) : ""}${A("pctQTake", "fa-solid fa-hand", { label: "Take it over", tip: "Make it your quest: you can add hidden parts and GM notes, and players go back to ticking and notes" })}</span>`
+    ? `<span class="pct-partytools">${t.category !== "Main" ? A("pctQMain", "fa-solid fa-flag", { label: "Make it a main quest", tip: "Set its category to Main. It stays a party quest." }) : ""}${A("pctQTake", "fa-solid fa-hand", { label: "Take it over", tip: "Make it your quest: you can add hidden parts and GM notes, and players go back to ticking and writing in the Party Journal" })}</span>`
     : "";
   return `<p class="pct-hint pct-partyline"><i class="fa-solid fa-users"></i> <span>A party quest, made by ${esc(by)}. ${gm ? (partyQuestsOn() ? "Players can edit it." : "Players can't edit it while \"Players can make quests\" is off.") : "Anyone in the party can edit it."}</span>${tools}</p>`;
 }
@@ -2909,10 +2931,11 @@ const QEDIT = {
   objectives: (t) => listEditor("objectives", t.objectives, (o, p) => `${goalEdit(o, p, "Objective", t)}
       <div class="pct-line"><span class="pct-k">Steps</span>${L("Done when", F.select(`${p}.mode`, o.mode, [["all", "every step is done"], ["any", "any one step is done"]]))}</div>
       <div class="pct-nested">${listEditor(`${p}.steps`, o.steps, (st, sp) => goalEdit(st, sp, "Step", t), "Step")}</div>`, "Objective"),
-  entries: (t) => listEditor("entries", t.entries, (e, p) => `${L("Date", F.date(`${p}.date`, e.date))}${L("Entry", F.area(`${p}.text`, e.text, "Spoke to the ferrywoman; she saw riders cross at dusk.", 2), "pct-grow")}`, "Journal entry"),
+  entries: (t) => listEditor("entries", t.entries, (e, p) => `${L("Date", F.date(`${p}.date`, e.date))}${L("Clue", F.area(`${p}.text`, e.text, "The ferrywoman saw riders cross at dusk.", 2), "pct-grow")}`, "Clue"),
   leads(t) {
     const others = Store.data.trackers.filter((x) => x.kind === "quest" && x.id !== t.id);
-    return listEditor("leads", t.leads, (l, p) => `<div class="pct-line">${L("Lead", F.text(`${p}.text`, l.text, "A smuggler at the docks knows a way in"), "pct-grow")}${L("Points to", F.select(`${p}.to`, l.to, [["", "nothing"], ...others.map((x) => [x.id, x.name])]))}</div>
+    const clues = (t.entries ?? []).map((e) => [e.id, shortText(e.text, 40) || "(no text)"]);
+    return listEditor("leads", t.leads, (l, p) => `<div class="pct-line">${L("Lead", F.text(`${p}.text`, l.text, "A smuggler at the docks knows a way in"), "pct-grow")}${L("Points to", F.select(`${p}.to`, l.to, [["", "nothing"], ...others.map((x) => [x.id, x.name])]))}${L("Reveals clue", F.select(`${p}.clue`, l.clue, [["", "nothing"], ...clues]))}</div>
       ${L("GM only", F.text(`${p}.gm`, l.gm), "pct-block")}`, "Lead");
   },
   rewards: (t) => listEditor("rewards", t.rewards, (r, p) => `<div class="pct-line">${L("Reward", F.text(`${p}.text`, r.text, "200 gp and the captain's favor"), "pct-grow")}
@@ -2943,8 +2966,8 @@ const QEDIT_PARTY = {
 const EDIT = {
   quest: (t) => `${QEDIT.meta(t)}
       <div class="pct-sub">Objectives. Players see each one when you reveal it; steps are revealed on their own, and revealing one shows its objective too.</div>${QEDIT.objectives(t)}
-      <div class="pct-sub">Journal: what happened, newest shown first. Players see each entry when you reveal it.</div>${QEDIT.entries(t)}
-      <div class="pct-sub">Leads: where to go next. A lead can point to another quest.</div>${QEDIT.leads(t)}
+      <div class="pct-sub">Clues: what the party has learned, newest shown first. Players see each one when you reveal it.</div>${QEDIT.entries(t)}
+      <div class="pct-sub">Leads: where to go next. A lead can point to another quest, and reveal a clue.</div>${QEDIT.leads(t)}
       <div class="pct-sub">Rewards. Drop a loot actor on a reward for treasure.</div>${QEDIT.rewards(t)}`,
 
   challenge: (t) => `<div class="pct-line">${L("Successes needed", F.num("goal", t.goal, "none"))}${L("Failures allowed", F.num("limit", t.limit, "no limit"))}${L("Rounds", F.num("rounds", t.rounds, "no limit"))}
@@ -3498,7 +3521,7 @@ async function revealPlan({ q, parts, questOnly = false }) {
   const rows = [], already = [];
   // M1: a link whose parts are all gone mustn't reveal the quest on its own.
   if (!q.revealed && (questOnly || parts.length)) rows.push({ name: "quest", value: q.id, label: parts.length ? "The quest itself (players see none of it yet)" : "The quest itself" });
-  const leadqs = new Set();
+  const leadqs = new Set(), leadcs = new Set();
   for (const p of parts) {
     if (rowShown(p)) {
       already.push(p);
@@ -3512,6 +3535,11 @@ async function revealPlan({ q, parts, questOnly = false }) {
       if (to && !leadqs.has(to.id)) {
         leadqs.add(to.id);
         rows.push({ name: "leadq", value: to.id, label: `and reveal the quest it points to, ${to.name}`, indent: true, for: p.id });
+      }
+      const clue = leadClue(q, p.row);
+      if (clue && !leadcs.has(clue.id) && !parts.some((x) => x.row.id === clue.id)) {
+        leadcs.add(clue.id);
+        rows.push({ name: "leadc", value: clue.id, label: `and reveal its clue, ${shortText(clue.text, 60) || "(no text)"}`, indent: true, for: p.id });
       }
     }
     if (p.list === "rewards") {
@@ -3546,25 +3574,26 @@ function readRevealForm(form) {
   const ticked = (n) => [...form.querySelectorAll(`input[name="${n}"]:checked`)];
   const rows = ticked("row").map((i) => i.value);
   const withParent = (n) => ticked(n).filter((i) => !i.dataset.for || rows.includes(i.dataset.for)).map((i) => i.value);
-  return { quest: ticked("quest").length > 0, rows, leadq: withParent("leadq"), loot: withParent("loot") };
+  return { quest: ticked("quest").length > 0, rows, leadq: withParent("leadq"), leadc: withParent("leadc"), loot: withParent("loot") };
 }
 
-const REVEAL_WORDS = { objectives: ["objective", "objectives"], "objectives.steps": ["step", "steps"], entries: ["journal entry", "journal entries"], leads: ["lead", "leads"], rewards: ["reward", "rewards"] };
+const REVEAL_WORDS = { objectives: ["objective", "objectives"], "objectives.steps": ["step", "steps"], entries: ["clue", "clues"], leads: ["lead", "leads"], rewards: ["reward", "rewards"] };
 
 /** Reveal what was chosen in one change, then open any loot, and say what happened. */
 async function applyReveal(qid, choice) {
-  if (!choice.quest && !choice.rows.length && !choice.leadq.length && !choice.loot.length) return void ui.notifications.info("Nothing revealed.");
+  choice.leadc ??= [];
+  if (!choice.quest && !choice.rows.length && !choice.leadq.length && !choice.leadc.length && !choice.loot.length) return void ui.notifications.info("Nothing revealed.");
   const cur = Store.get(qid);
   if (cur?.kind !== "quest") return void ui.notifications.warn("That quest no longer exists.");
   const hidden = (choice.quest && !cur.revealed)
-    || choice.rows.some((id) => { const f = findRow(cur, id); return !!f && !rowShown(f); })
+    || [...choice.rows, ...choice.leadc].some((id) => { const f = findRow(cur, id); return !!f && !rowShown(f); })
     || choice.leadq.some((id) => Store.get(id)?.revealed === false);
   const res = !hidden ? { name: cur.name, quest: false, kinds: {}, quests: [] } : await mutate((d) => {
     const tr = d.trackers.find((x) => x.id === qid && x.kind === "quest");
     if (!tr) return undefined;
     const out = { name: tr.name, quest: false, kinds: {}, quests: [] };
     if (choice.quest && !tr.revealed) out.quest = tr.revealed = true;
-    for (const id of choice.rows) {
+    for (const id of [...choice.rows, ...choice.leadc]) {
       const f = findRow(tr, id);
       if (!f || !ROW_KIND[f.list]) continue;
       for (const list of revealRow(f)) out.kinds[list] = (out.kinds[list] ?? 0) + 1;
@@ -3622,7 +3651,7 @@ async function revealFromLink(questRef, partList, { ask = true, trusted = true }
     if (!trusted) ask = true;
     if (!ask && r.missing.length) ui.notifications.warn(`${esc(r.q.name)}: nothing with the id ${r.missing.map(esc).join(", ")}.`);
     const all = (n) => plan.rows.filter((x) => x.name === n).map((x) => x.value);
-    const choice = ask ? await chooseReveal(r, plan) : { quest: all("quest").length > 0, rows: all("row"), leadq: all("leadq"), loot: all("loot") };
+    const choice = ask ? await chooseReveal(r, plan) : { quest: all("quest").length > 0, rows: all("row"), leadq: all("leadq"), leadc: all("leadc"), loot: all("loot") };
     if (choice) await applyReveal(r.q.id, choice);
   } finally {
     revealBusy.delete(key);
@@ -4383,7 +4412,7 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     const text = area?.value.trim();
     if (!t || !text) return;
     if (this.isGM) {
-      if ((t.pnotes?.length ?? 0) >= NOTE_MAX) return ui.notifications.warn(`${esc(t.name)} has ${NOTE_MAX} notes, the most it holds. Delete some first.`);
+      if ((t.pnotes?.length ?? 0) >= NOTE_MAX) return ui.notifications.warn(`The Party Journal of ${esc(t.name)} has ${NOTE_MAX} entries, the most it holds. Delete some first.`);
       await mutateTracker(t.id, (tr) => applyQuestNote(tr, "add", { by: game.user.id, name: "GM", text, isGM: true }) || undefined, { notify: false });
     } else if (game.user.isGM) {
       return;
@@ -4516,7 +4545,7 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     if (!this.isGM || !t?.party) return;
     const ok = await foundry.applications.api.DialogV2.confirm({
       window: { title: "Take it over" },
-      content: `<p>Make <strong>${esc(t.name)}</strong> your quest? Everything in it stays, and players still see it, but they can only tick objectives and add notes from now on. This can't be undone from the window.</p>`,
+      content: `<p>Make <strong>${esc(t.name)}</strong> your quest? Everything in it stays, and players still see it, but they can only tick objectives and write in the Party Journal from now on. This can't be undone from the window.</p>`,
     });
     if (!ok) return;
     await mutateTracker(t.id, (tr) => {
@@ -4648,13 +4677,26 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     }, { notify: false });
     const lm = path.match(/^leads\.(\d+)\.revealed$/);
     if (now === "on" && lm) {
-      const lead = Store.get(id)?.leads?.[Number(lm[1])];
+      const t = Store.get(id);
+      const lead = t?.leads?.[Number(lm[1])];
       const to = lead ? Store.data.trackers.find((x) => x.id === lead.to && x.kind === "quest" && !x.revealed) : null;
-      if (to && await foundry.applications.api.DialogV2.confirm({ window: { title: "Lead" }, content: `<p>This lead points to <strong>${esc(to.name)}</strong>, which players can't see yet. Reveal it too?</p>` })) {
-        await mutateTracker(to.id, (t) => {
-          t.revealed = true;
-        }, { notify: false });
-      }
+      const clue = leadClue(t, lead);
+      const offers = [to && { name: "quest", label: `The quest it points to, ${to.name}` }, clue && { name: "clue", label: `Its clue: ${shortText(clue.text, 70) || "(no text)"}` }].filter(Boolean);
+      if (!offers.length) return;
+      const pick = await foundry.applications.api.DialogV2.wait({
+        window: { title: "Lead" },
+        content: `<p>${offers.length === 1 ? "Players can't see this yet. Reveal it too?" : "Players can't see these yet. Reveal them too?"}</p><div class="pct-rl-rows">${offers.map((o) => `<label class="pct-chk"><input type="checkbox" name="${o.name}" checked> <span>${esc(o.label)}</span></label>`).join("")}</div>`,
+        buttons: [
+          { action: "reveal", label: "Reveal", icon: "fa-solid fa-eye", default: true, callback: (ev, button) => ({ quest: !!button.form.elements.quest?.checked, clue: !!button.form.elements.clue?.checked }) },
+          { action: "cancel", label: "Not now" },
+        ],
+        rejectClose: false,
+      });
+      if (!pick || typeof pick !== "object") return;
+      if (pick.quest && to) await mutateTracker(to.id, (q) => {
+        q.revealed = true;
+      }, { notify: false });
+      if (pick.clue && clue) await mutateTracker(id, (q) => (revealRow(findRow(q, clue.id)).length ? true : undefined), { notify: false });
       return;
     }
     const m = path.match(/^rewards\.(\d+)\.revealed$/);
@@ -5118,7 +5160,7 @@ Hooks.on("createChatMessage", (message) => {
   const ad = card?.flags[SCOPE].adhoc;
   if (ad && ad.actors?.includes(ctx.actor) && !ad.rolled?.[ctx.actor]) card.update({ [`flags.${SCOPE}.adhoc.rolled.${ctx.actor}`]: true });
   const prop = recent.find((m) => m.flags?.[SCOPE]?.proposal?.target === tag.target);
-  const pr = prop?.flags[SCOPE].proposal;
+  const pr = proposalOf(prop);
   if (pr && pr.status === "approved" && pr.actorId === ctx.actor && !pr.rolled) prop.update({ [`flags.${SCOPE}.proposal.rolled`]: true });
 });
 Hooks.on("updateActor", (actor, changes) => {

@@ -2,6 +2,10 @@
 
 ## 2.5.0
 
+- Quests: the Journal section is now **Clues** (what the party has learned), and Party notes are now the **Party Journal**. Nothing in your quests changes but the names.
+- A lead can reveal a clue: pick one under "Reveals clue" in the lead's editor. Revealing the lead offers its clue (and the quest it points to) ticked, from the eye, the completion card or a reveal link.
+- The magnifying glass on a Party Journal entry makes it a clue (it was the book that added a party note to the journal).
+- A proposal card shows an answer (approved, declined, rolled) only when a GM gave it; a player's own edit to the card's data leaves it waiting.
 - Proposals outside a skill challenge: a player can propose a check in ordinary play, with the skill (lores included), what they do and why, from a hotbar macro running `game.modules.get("pf2e-campaign-trackers").api.propose()`. You set the skill and DC (the character's level DC to start, Easy and Hard) and approve or decline it on the card, as in a challenge. Approved, it's a roll button for the player, who never sees the DC.
 
 ## 2.4.0
