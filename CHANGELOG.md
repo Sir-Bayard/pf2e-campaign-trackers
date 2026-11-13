@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.6.0
+
+- Quests stay readable as they grow. Clues show newest revealed first, for you and the players (clues revealed before this version keep their order, below new ones).
+- File a clue under the objective or step it belongs to: drag it there by the grip at the end of its row, or pick one under "Filed under" in the clue's editor. Clues not filed yet come first, then a fold for each objective or step, the one with the newest clue first; a done or failed objective's fold starts closed. Objectives show how many clues are filed under them. Drag a clue onto the Clues heading to unfile it.
+- Leads can be marked followed with the box in front of them: struck through and moved into a closed Followed fold. Following a lead whose quest or clues are still hidden offers them, ticked.
+- A lead can reveal several clues ("Reveals clues" in its editor). A lead's single clue carries over, and a clue that was deleted drops off the lead.
+- On your side, hidden clues and leads sit in a Hidden fold under each list. A hidden clue filed ahead of time shows a tag naming its fold.
+- Players can mark leads followed (you get a card offering what it points to) and file clues under the objectives they can see, along with ticking objectives. The setting is now "Players can tick objectives, follow leads and file clues". They can undo a player's mark, not yours.
+- Folds you open or close are kept in your browser.
+- Long clue text no longer wraps under its eye.
+- Post to chat quotes the quest's newest revealed clue.
+- For macros: a lead from `api.get()` now lists its clues as `clues` (ids), in place of `clue`.
+
 ## 2.5.0
 
 - Quests: the Journal section is now **Clues** (what the party has learned), and Party notes are now the **Party Journal**. Nothing in your quests changes but the names.
