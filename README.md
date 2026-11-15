@@ -87,23 +87,23 @@ https://github.com/Sir-Bayard/pf2e-campaign-trackers/releases/latest/download/mo
 
 Foundry's **Update** button then picks up each new release. You can also download `module.zip` from the [latest release](https://github.com/Sir-Bayard/pf2e-campaign-trackers/releases/latest) and unzip it into `Data/modules/pf2e-campaign-trackers`.
 
-Requires Foundry VTT 14 (verified on 14.369) and the Pathfinder 2e system 8.0.0 or later.
+Requires Foundry VTT 14 (verified on 14.370) and the Pathfinder 2e system 8.0.0 or later.
 
 Updating keeps your trackers. Export them first anyway (see [Backup: export and import](#backup-export-and-import)).
 
 ## What it does
 
-A quest log, GM Core's subsystems and a few table-neutral trackers in one window, one tab each: Quests, Reputation, Pressure, Victory Points, Skill Challenges, Influence, Research, Chases, Infiltration, Clocks and Checklists. Everything is hidden from players until you reveal it. Checks roll through the PF2e system and you apply the result from the roll card. Dates on clocks, checklist entries and quests whisper you a reminder when the calendar reaches them. Another module can ship campaign content as a preset.
+Each kind of tracker has its own tab in the window, and the sections below go through them one by one. Anything you make starts hidden from players until you reveal it.
 
 It replaces PF2e Subsystems. Rebuild any event you had there as a tracker here, then turn PF2e Subsystems and PF2e Subsystem Theming off.
 
 ## Opening it
 
-Token controls on the left: the list icon at the bottom of the list. Keyboard: Alt+T (change it under Configure Controls).
+Token controls on the left: the list icon at the bottom of the list. Keyboard: Alt+T (change it under Configure Controls; in Firefox on Windows, Alt+T also opens the browser's Tools menu, so you may want another key there).
 
 Macro: `game.modules.get("pf2e-campaign-trackers").api.open()`, or `api.open("reputation")` to open it on a tab (see [For macros](#for-macros)).
 
-The window remembers its size and place, its tab, which cards are folded and which GM-notes boxes are open, in this browser.
+The window remembers its size and place, its tab, which cards are folded and which GM-notes boxes are open, in this browser, for each world and each user.
 
 ## The tabs
 
@@ -127,7 +127,7 @@ Every tracker starts hidden. The eye on a tracker shows it to players; inside it
 
 Your data is kept in a journal entry called "Campaign Trackers (GM data)", hidden from players. Leave it where it is: the module refuses to delete it, and warns if a copy of it turns up. Players' windows are drawn from a copy of what you have revealed, nothing more.
 
-Hidden means hidden from the players' screens, not secret. Foundry sends every journal entry and world setting to every player's browser, whatever its permissions, so a player who goes looking in the browser console can read all of it: your notes, hidden trackers, DCs. Keep anything truly secret out of Foundry.
+Hidden means hidden from the players' screens, not secret. Foundry sends every journal entry and world setting to every player's browser, whatever its permissions, so a player who goes looking in the browser console can read all of it: your notes, hidden trackers, DCs (the ones on roll cards and check cards too). Keep anything truly secret out of Foundry.
 
 ## Backup: export and import
 
@@ -297,6 +297,8 @@ For quests, an update keeps the status, ticks, counts, reveals, the Party Journa
 const api = game.modules.get("pf2e-campaign-trackers").api;
 api.adjust("tracker-id", "value", 1);
 api.set("tracker-id", "segments.2.state", "filled");
+// adjust and set change any tracker for the GM. Run by a player, they reach only a party quest the player may edit,
+// and only what the window lets them change, checked by the GM's client as an edit in the window is.
 api.reveal("tracker-id");
 api.list()   // every tracker, with its id
 api.open()   // open the window where it was left

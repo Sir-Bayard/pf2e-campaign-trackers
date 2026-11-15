@@ -11,6 +11,11 @@
  * module socket. Campaign content can be shipped by another module as a preset.
  */
 
+import { storage } from "./kit/storage.mjs";
+import { singleWindow } from "./kit/single-window.mjs";
+import { esc, safe } from "./kit/safe-text.mjs";
+import { gmTabs } from "./kit/gm-tabs.mjs";
+
 const MOD = "pf2e-campaign-trackers";
 /** Flag scope for the data journal and chat cards. */
 const SCOPE = MOD;
@@ -36,34 +41,19 @@ const DEG = () => ({ criticalSuccess: 2, success: 1, failure: 0, criticalFailure
 /** What each result adds to a skill challenge: s successes and f failures. */
 const CDEG = () => ({ criticalSuccess: { s: 2, f: 0 }, success: { s: 1, f: 0 }, failure: { s: 0, f: 1 }, criticalFailure: { s: 0, f: 1 } });
 
-function esc(s) {
-  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-}
 /** Plain text with line breaks kept. */
 const para = (s) => esc(s).replace(/\n/g, "<br>");
 const uid = () => foundry.utils.randomID(10).toLowerCase();
 const clone = (x) => (x === undefined ? undefined : JSON.parse(JSON.stringify(x)));
 const num = (v, d = 0) => (Number.isFinite(Number(v)) && v !== "" && v !== null ? Number(v) : d);
 const signed = (n) => (n > 0 ? `+${n}` : `${n}`);
-/* Foundry's active GM is a user, not a browser tab, so the same GM in two tabs would answer every request twice.
- * Each GM tab gets an id and tells the others about itself; only the tab with the lowest id among the active GM's
- * live tabs acts. */
-const CLIENT_ID = globalThis.foundry?.utils?.randomID?.(16) ?? Math.random().toString(36).slice(2, 18);
-const gmTabs = new Map();
-/* A hidden tab's timers can slow to about once a minute, so a tab is forgotten only after 150 s without a word, and
- * each tab answers an announcement from a tab with a higher id (socket messages aren't slowed), so the lead stays
- * known while it lives. */
-const TAB_TTL = 150000;
-let lastAnswer = 0;
-function leadTab() {
-  const now = Date.now();
-  for (const [id, seen] of gmTabs) if (now - seen > TAB_TTL) gmTabs.delete(id);
-  return [...gmTabs.keys()].every((id) => CLIENT_ID < id);
-}
-const isPrimaryGM = () => game.user.isGM && game.users.activeGM?.id === game.user.id && leadTab();
-function announceTab(hello = false) {
-  if (game.user.isGM) game.socket.emit(SOCKET, { type: "gmtab", client: CLIENT_ID, hello });
-}
+/* Foundry's active GM is a user, not a browser tab: of the active GM's tabs, the kit's election picks one to do the
+ * GM's work (answering players, publishing the players' copy, reminders). */
+const tabs = gmTabs(MOD);
+/** What this browser keeps for the module (marks, folds, pins, the window), per world and per user. */
+const local = storage(MOD);
+/** The key a value had when it was kept for the whole browser; read once while this world and user have none. */
+const oldKey = (what) => `${MOD}.${what}`;
 
 /* ------------------------------------------------------------------ */
 /* Templates for every list in every tracker                           */
@@ -451,7 +441,11 @@ function rowChanges(b, a, spec) {
 /** A value a player sent, made safe for its field. */
 function partyValue(f, v) {
   const text = (max) => String(v ?? "").slice(0, max);
-  const date = () => (v && typeof v === "object" && [v.y, v.m, v.d].every(Number.isFinite) ? { y: Math.trunc(v.y), m: Math.trunc(v.m), d: Math.trunc(v.d) } : null);
+  const date = () => {
+    if (!v || typeof v !== "object" || ![v.y, v.m, v.d].every(Number.isFinite)) return null;
+    const x = { y: Math.trunc(v.y), m: Math.trunc(v.m), d: Math.trunc(v.d) };
+    return onCalendar(x) ? x : null;
+  };
   switch (f) {
     case "name": return text(120).trim() || "Untitled quest";
     case "desc": return text(4000);
@@ -664,18 +658,36 @@ function questHash(p) {
   return (h >>> 0).toString(36);
 }
 
-/** What each quest looked like when this player last opened it, kept in this browser. */
-const SEEN_KEY = `${MOD}.seen`;
+/** What each quest looked like when this player last opened it, kept in this browser for this world and user. */
 let seenCache = null;
 function seenMap() {
   if (seenCache) return seenCache;
-  try {
-    seenCache = JSON.parse(localStorage.getItem(SEEN_KEY)) ?? {};
-  } catch {
-    seenCache = {};
+  // Not before the world and user are known: there's nowhere to keep it yet. The GM has no marks.
+  if (!local.key("seen") || game.user.isGM) return {};
+  let v = local.get("seen");
+  if (v === undefined) {
+    const from = claimOldSeen();
+    if (from) v = local.get("seen", undefined, { from });
   }
+  seenCache = plainObject(v);
   return seenCache;
 }
+/**
+ * The marks this browser kept before they were kept per world and user were one person's, so only the first player to
+ * open a world after that takes them. Returns the old key for that one player, else null.
+ */
+function claimOldSeen() {
+  try {
+    const store = globalThis.localStorage;
+    const claim = `${oldKey("seen")}.claimed`;
+    if (!store || store.getItem(claim) || store.getItem(oldKey("seen")) == null) return null;
+    store.setItem(claim, `${game.world.id}.${game.user.id}`);
+    return oldKey("seen");
+  } catch {
+    return null;
+  }
+}
+const plainObject = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
 /** "new" for a quest this player has never opened, "updated" if it changed since, else "". */
 function unseen(q) {
   const was = seenMap()[q.id];
@@ -687,11 +699,8 @@ function markSeen(q) {
   if (map[q.id] === h) return false;
   map[q.id] = h;
   changedSoon();
-  try {
-    localStorage.setItem(SEEN_KEY, JSON.stringify(map));
-  } catch {
-    /* no storage: markers come back next time */
-  }
+  // Without storage the markers come back next time.
+  local.set("seen", map);
   return true;
 }
 
@@ -796,7 +805,7 @@ function questNotices(pub) {
   }
   if (!lines.length) return;
   for (const l of lines.slice(0, 3)) ui.notifications.info(l);
-  if (lines.length > 3) ui.notifications.info(`${lines.length - 3} more quests changed.`);
+  if (lines.length > 3) ui.notifications.info(safe`${lines.length - 3} more quests changed.`);
   const src = game.settings.get(MOD, "questSound");
   if (src) foundry.audio.AudioHelper.play({ src, volume: 0.6, autoplay: true, loop: false }, false);
 }
@@ -827,27 +836,16 @@ const markRate = new Map();
  */
 async function onSocket(msg, senderId) {
   if (!msg?.type) return;
+  if (tabs.handle(msg, senderId)) return;
   const sender = game.users.get(senderId);
-  if (msg.type === "gmtab" || msg.type === "gmbye") {
-    if (!game.user.isGM || sender?.id !== game.user.id || typeof msg.client !== "string") return;
-    if (msg.type === "gmbye") gmTabs.delete(msg.client);
-    else {
-      gmTabs.set(msg.client, Date.now());
-      if (msg.hello || (msg.client > CLIENT_ID && Date.now() - lastAnswer > 5000)) {
-        lastAnswer = Date.now();
-        announceTab(false);
-      }
-    }
-    return;
-  }
-  // The GM's client answers a player: a request it couldn't record, or the quest it made for them.
+  // The active GM's client answers a player: a request it couldn't record, or the quest it made for them.
   if (msg.type === "qfail" || msg.type === "qmade") {
-    if (!sender?.isGM || msg.to !== game.user.id) return;
+    if (!sender?.isGM || sender.id !== game.users.activeGM?.id || msg.to !== game.user.id) return;
     if (msg.type === "qfail") ui.notifications.warn(String(msg.text ?? "That didn't go through."));
     else openQuestWhenShared(msg.tid);
     return;
   }
-  if (!isPrimaryGM()) return;
+  if (!(await tabs.leadNow())) return;
   const user = sender;
   if (!user || user.isGM || (msg.userId && msg.userId !== user.id)) return;
   const fail = (text) => game.socket.emit(SOCKET, { type: "qfail", to: user.id, text });
@@ -1133,7 +1131,7 @@ const Store = {
     const all = game.journal?.filter((j) => j.getFlag?.(SCOPE, "store")) ?? [];
     if (all.length > 1 && !this.warnedDupes) {
       this.warnedDupes = true;
-      ui.notifications.warn(`Campaign Trackers: ${all.length} journal entries carry the tracker data (${all.map((j) => `"${j.name}"`).join(", ")}). Keep one: export your data from the window menu, then unlock and delete the others (see the README).`);
+      ui.notifications.warn(safe`Campaign Trackers: ${all.length} journal entries carry the tracker data (${all.map((j) => `"${j.name}"`).join(", ")}). Keep one: export your data from the window menu, then unlock and delete the others (see the README).`);
     }
     return all.find((j) => j.id === this.journal?.id) ?? all[0] ?? null;
   },
@@ -1158,7 +1156,10 @@ const Store = {
   /** Make sure there is a data journal: find it, or, as the active GM, create it with the current data. Never makes a second one. */
   async ensure() {
     this.journal = this.find();
-    if (this.journal || !isPrimaryGM()) return;
+    if (this.journal || !(await tabs.leadNow())) return;
+    // Another GM may have made it while this tab waited for the election.
+    this.journal = this.find();
+    if (this.journal) return;
     await JournalEntry.create({
       name: "Campaign Trackers (GM data)",
       ownership: { default: CONST.DOCUMENT_OWNERSHIP_LEVELS.NONE },
@@ -1222,7 +1223,7 @@ const Store = {
           ok = true;
         } catch (err) {
           console.error(`${MOD} | save failed`, err);
-          ui.notifications.error(`Campaign Trackers: couldn't save (${err.message}). The change is only in this window; export your data from the window menu before reloading.`);
+          ui.notifications.error(safe`Campaign Trackers: couldn't save (${err.message}). The change is only in this window; export your data from the window menu before reloading.`);
           return false;
         }
       } while (this.pending);
@@ -1541,14 +1542,14 @@ function mergePreset(d, preset) {
 
 /** Load presets the world hasn't seen, and update the text of ones whose version changed. */
 async function syncPresets({ force = false, only = null } = {}) {
-  if (!storeReady || !isPrimaryGM() || Store.broken) return;
+  if (!storeReady || Store.broken || !(await tabs.leadNow())) return;
   for (const preset of presets.values()) {
     if (only && preset.id !== only) continue;
     const have = Store.data.presets?.[preset.id];
     if (have && have.version === preset.version && !force) continue;
     const { added, updated } = (await mutate((d) => mergePreset(d, preset), { notify: false })) ?? {};
     const what = [added && `${added} added`, updated && `${updated} updated`].filter(Boolean).join(", ");
-    ui.notifications.info(`Campaign Trackers: ${preset.label} preset ${have ? "updated" : "loaded"} (${what || "no trackers"}). New trackers start hidden from players.`);
+    ui.notifications.info(safe`Campaign Trackers: ${preset.label} preset ${have ? "updated" : "loaded"} (${what || "no trackers"}). New trackers start hidden from players.`);
   }
 }
 
@@ -1608,7 +1609,7 @@ const HIDE_DC = "pct-hide-dc";
 async function rollAs(actor, { tid, target, check, title, hideDC = false }) {
   const stat = actor.getStatistic?.(String(check.skill || "").toLowerCase());
   if (!stat) {
-    ui.notifications.warn(`${actor.name} has no ${skillLabel(check.skill)} to roll.`);
+    ui.notifications.warn(safe`${actor.name} has no ${skillLabel(check.skill)} to roll.`);
     return null;
   }
   const dc = Number.isFinite(Number(check.dc)) && check.dc !== null && check.dc !== "" ? { value: Number(check.dc), ...(hideDC ? { visible: false } : {}) } : undefined;
@@ -1875,7 +1876,7 @@ async function proposeDialog(tid, fallback = {}) {
   const actor = rollers()[0];
   if (!actor) return ui.notifications.warn(game.user.isGM ? "Select the token of the character who is proposing." : "Select your token, or ask the GM to assign you a character.");
   const skills = actorSkills(actor);
-  if (!skills.length) return ui.notifications.warn(`${actor.name} has no skills to propose with.`);
+  if (!skills.length) return ui.notifications.warn(safe`${actor.name} has no skills to propose with.`);
   const opt = explain ? "" : " (optional)";
   let v = { skill: skills.find(([x]) => x !== "perception")?.[0] ?? skills[0][0], what: "", why: "" };
   for (;;) {
@@ -2244,6 +2245,32 @@ function applyRecorded(tr, args) {
   return text ? { text, changes: diffTracker(before, tr) } : null;
 }
 
+/** The line a roll card's Apply box shows ("+1 success (2 of 4)"), from the tracker as it is now. */
+function previewText(t, args, prior) {
+  const copy = clone(t);
+  if (prior) undoChanges(copy, prior.changes);
+  return applyRoll(copy, args);
+}
+/** Roll cards drawn with an Apply line, by message id, so the line can follow its tracker as other rolls are applied. */
+const previewShown = new Map();
+/** Draw again the roll cards whose Apply line no longer matches their tracker. */
+function refreshPreviews() {
+  if (!game.user.isGM) return;
+  for (const [id, p] of previewShown) {
+    // Its own Apply is under way: the tracker already counts this roll and the card's flag is about to land.
+    if (busyCards.has(id)) continue;
+    const m = game.messages.get(id);
+    const t = Store.get(p.tid);
+    if (!m || !t || m.getFlag(SCOPE, "applied") || m.getFlag(SCOPE, "replaced")) {
+      previewShown.delete(id);
+      continue;
+    }
+    if (previewText(t, p.args, p.prior) === p.text) continue;
+    previewShown.delete(id);
+    ui.chat?.updateMessage?.(m);
+  }
+}
+
 /**
  * A reroll (a hero point) deletes the roll card and posts a new one. When the first card had been
  * applied, what it applied is kept here for a short while, so the new card can offer to replace it.
@@ -2526,7 +2553,7 @@ function onRenderMessage(message, html) {
   const args = { target: tag.target, outcome: ctx.outcome, actorId: actor?.id ?? null, actorName: "", logName: actor ? pcName(actor) : "", skill: locate(t, tag.target)?.checks?.find((c) => c.id === tag.checkId)?.skill ?? tag.checkId ?? "" };
   const prior = applied ? null : priorApplied(message);
   if (applied) {
-    box.innerHTML = `<i class="fa-solid fa-check"></i> ${esc(applied.text)}${applied.changes ? ` <a class="pct-undo" data-tooltip="Take this result back off ${esc(t.name)}"><i class="fa-solid fa-rotate-left"></i> Undo</a>` : ""}`;
+    box.innerHTML = `<i class="fa-solid fa-check"></i> ${esc(applied.text)}${applied.changes ? ` <a class="pct-undo" data-tooltip-text="Take this result back off ${esc(t.name)}"><i class="fa-solid fa-rotate-left"></i> Undo</a>` : ""}`;
     box.querySelector(".pct-undo")?.addEventListener("click", (ev) => {
       ev.preventDefault();
       ev.currentTarget.classList.add("pct-busy");
@@ -2544,10 +2571,9 @@ function onRenderMessage(message, html) {
     box.innerHTML = `<i class="fa-solid fa-circle-info"></i> No DC on this roll, so there is no result to apply to ${esc(t.name)}.`;
   } else if (prior) {
     // The roll before this reroll was applied: offer to swap its result for this one's.
-    const copy = clone(t);
-    undoChanges(copy, prior.changes);
-    const preview = applyRoll(copy, args);
+    const preview = previewText(t, args, prior);
     if (!preview) return;
+    previewShown.set(message.id, { tid: t.id, args: clone(args), prior: clone(prior), text: preview });
     box.innerHTML = `<p class="pct-preview">The roll before this reroll was applied: ${esc(prior.text)}</p><button type="button"><i class="fa-solid fa-arrows-rotate"></i> Replace it with this roll</button><div class="pct-preview">${esc(preview)}</div>`;
     box.querySelector("button").addEventListener("click", (ev) => {
       ev.preventDefault();
@@ -2562,8 +2588,9 @@ function onRenderMessage(message, html) {
       });
     });
   } else {
-    const preview = applyRoll(clone(t), args);
+    const preview = previewText(t, args, null);
     if (!preview) return;
+    previewShown.set(message.id, { tid: t.id, args: clone(args), prior: null, text: preview });
     box.innerHTML = `<button type="button"><i class="${KIND_INFO[t.kind].icon}"></i> Apply to ${esc(t.name)}</button><div class="pct-preview">${esc(preview)}</div>`;
     box.querySelector("button").addEventListener("click", (ev) => {
       ev.preventDefault();
@@ -2617,7 +2644,7 @@ function monthIndex(name) {
 }
 
 /**
- * A date typed against the world calendar: "15 Vind", "15 Vind 1534", "Vind 15" or "1534-12-15". Returns null for
+ * A date typed against the world calendar: "15 <month>", "15 <month> 1534", "<month> 15" or "1534-12-15". Returns null for
  * blank and undefined if unreadable.
  */
 function parseDate(str, defYear = today().y) {
@@ -2635,6 +2662,17 @@ function parseDate(str, defYear = today().y) {
   if (d < 1 || (days && d > days)) return undefined;
   return { y, m: mi + 1, d };
 }
+
+/** Whether { y, m, d } (months and days from 1) is a day on the world's calendar, as a typed date must be. */
+function onCalendar({ y, m, d }) {
+  if (![y, m, d].every(Number.isInteger) || Math.abs(y) > 99999) return false;
+  const list = months();
+  if (m < 1 || m > (list.length || 12)) return false;
+  return d >= 1 && d <= (list[m - 1]?.days || 31);
+}
+
+/** An example date on the world's calendar, for a date box's placeholder and hints. */
+const exampleDate = (withYear = false) => `15 ${months()[0]?.short ?? "Month"}${withYear ? ` ${today().y}` : ""}`;
 
 /** Find reminders due by `now` and mark them, in place. Returns the lines to whisper. */
 function collectReminders(d, now) {
@@ -2700,7 +2738,7 @@ function scheduleReminders() {
 }
 
 async function checkReminders() {
-  if (!isPrimaryGM() || !storeReady || Store.broken || !game.settings.get(MOD, "reminders")) return;
+  if (!storeReady || Store.broken || !game.settings.get(MOD, "reminders") || !(await tabs.leadNow())) return;
   const now = dkey(today());
   const draft = clone(Store.data);
   const lines = collectReminders(draft, now);
@@ -2716,15 +2754,15 @@ async function checkReminders() {
 const dataAttrs = (data) => Object.entries(data).map(([k, v]) => `data-${k}="${esc(v)}"`).join(" ");
 /** An action link. `label` is plain text. */
 const A = (action, icon, { tip = "", label = "", cls = "", data = {} } = {}) =>
-  `<a class="pct-btn ${cls}" data-action="${action}" ${dataAttrs(data)} ${tip ? `data-tooltip="${esc(tip)}"` : ""}>${icon ? `<i class="${icon}"></i>` : ""}${label ? `<span>${esc(label)}</span>` : ""}</a>`;
+  `<a class="pct-btn ${cls}" data-action="${action}" ${dataAttrs(data)} ${tip ? `data-tooltip-text="${esc(tip)}"` : ""}>${icon ? `<i class="${icon}"></i>` : ""}${label ? `<span>${esc(label)}</span>` : ""}</a>`;
 
 const F = {
   text: (path, v, ph = "", cls = "") => `<input type="text" data-path="${path}" value="${esc(v)}" placeholder="${esc(ph)}" class="${cls}">`,
   num: (path, v, ph = "", cls = "") => `<input type="number" data-path="${path}" data-type="number" value="${v === null || v === undefined ? "" : esc(v)}" placeholder="${esc(ph)}" class="pct-num ${cls}">`,
   area: (path, v, ph = "", rows = 2) => `<textarea data-path="${path}" rows="${rows}" placeholder="${esc(ph)}">${esc(v)}</textarea>`,
-  bool: (path, v, label, tip = "") => `<label class="pct-chk" ${tip ? `data-tooltip="${esc(tip)}"` : ""}><input type="checkbox" data-path="${path}" data-type="bool" ${v ? "checked" : ""}> <span>${esc(label)}</span></label>`,
+  bool: (path, v, label, tip = "") => `<label class="pct-chk" ${tip ? `data-tooltip-text="${esc(tip)}"` : ""}><input type="checkbox" data-path="${path}" data-type="bool" ${v ? "checked" : ""}> <span>${esc(label)}</span></label>`,
   select: (path, v, opts) => `<select data-path="${path}">${opts.map(([val, lab]) => `<option value="${esc(val)}" ${String(val) === String(v) ? "selected" : ""}>${esc(lab)}</option>`).join("")}</select>`,
-  date: (path, v) => `<input type="text" data-path="${path}" data-type="date" value="${esc(v ? fmtDate(v, { year: true }) : "")}" placeholder="15 Vind" class="pct-date">`,
+  date: (path, v) => `<input type="text" data-path="${path}" data-type="date" value="${esc(v ? fmtDate(v, { year: true }) : "")}" placeholder="${esc(exampleDate())}" class="pct-date">`,
 };
 const L = (label, inner, cls = "") => `<label class="pct-field ${cls}"><span>${esc(label)}</span>${inner}</label>`;
 
@@ -2733,7 +2771,7 @@ const eye = (path, on) => A("pctToggle", on ? "fa-solid fa-eye" : "fa-solid fa-e
 function stepper(path, value, { steps = [1], label = "", tip = "", fmt = (v) => v } = {}) {
   const minus = [...steps].reverse().map((s) => A("pctStep", "", { label: `-${s}`, data: { path, delta: -s }, cls: "pct-step" })).join("");
   const plus = steps.map((s) => A("pctStep", "", { label: `+${s}`, data: { path, delta: s }, cls: "pct-step" })).join("");
-  return `<span class="pct-stepper" ${tip ? `data-tooltip="${esc(tip)}"` : ""}>${label ? `<span class="pct-step-label">${esc(label)}</span>` : ""}${minus}<span class="pct-value">${esc(fmt(value))}</span>${plus}</span>`;
+  return `<span class="pct-stepper" ${tip ? `data-tooltip-text="${esc(tip)}"` : ""}>${label ? `<span class="pct-step-label">${esc(label)}</span>` : ""}${minus}<span class="pct-value">${esc(fmt(value))}</span>${plus}</span>`;
 }
 
 function listEditor(path, rows, rowFn, addLabel) {
@@ -2769,7 +2807,7 @@ function degreesEdit(t) {
 function checkButton(t, target, c, { gm }) {
   const dc = gm && c.dc !== null && c.dc !== undefined && c.dc !== "" ? ` <em>DC ${esc(c.dc)}</em>` : "";
   const rp = c.maxRP !== null && c.maxRP !== undefined && c.maxRP !== "" ? ` <span class="pct-chip" data-tooltip="Research points earned here, of the most it can give">${num(c.earned)} / ${c.maxRP}</span>` : "";
-  return `<button type="button" class="pct-roll" data-action="pctRoll" data-target="${esc(target)}" data-check="${esc(c.id)}" data-tooltip="${gm ? "Roll for the selected tokens" : "Roll for your character"}"><i class="fa-solid fa-dice-d20"></i> <strong>${esc(skillLabel(c.skill))}</strong>${dc}</button>${c.label ? `<span class="pct-for">${esc(c.label)}</span>` : ""}${rp}`;
+  return `<button type="button" class="pct-roll" data-action="pctRoll" data-target="${esc(target)}" data-check="${esc(c.id)}" data-tooltip-text="${gm ? "Roll for the selected tokens" : "Roll for your character"}"><i class="fa-solid fa-dice-d20"></i> <strong>${esc(skillLabel(c.skill))}</strong>${dc}</button>${c.label ? `<span class="pct-for">${esc(c.label)}</span>` : ""}${rp}`;
 }
 
 function checkRows(t, target, checks, { gm, perCheckTarget = false, revealEach = false, path = "" }) {
@@ -2802,6 +2840,22 @@ function clockSVG(segs, size = 72) {
     return `<path d="${d}" class="pct-seg-${s.state || "empty"}"/>`;
   }).join("");
   return `<svg class="pct-clock" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">${paths}</svg>`;
+}
+
+/**
+ * Points at an individual obstacle held by someone who isn't in the party now: a character who left it, a creature
+ * the GM rolled for, or a roll made with no character. They count toward the total, so they get a row too.
+ */
+function othersAt(o, pcs) {
+  const inParty = new Set(pcs.map((pc) => pc.id));
+  return Object.entries(o.byActor ?? {})
+    .filter(([k, v]) => !inParty.has(k) && /^[A-Za-z0-9]{1,32}$/.test(k) && num(v) !== 0)
+    .map(([k, v]) => {
+      const actor = k === "party" ? null : game.actors.get(k);
+      // Every actor reaches every client, so a player is told the name only of someone they can see.
+      const known = actor && (game.user.isGM || actor.testUserPermission?.(game.user, "LIMITED"));
+      return { id: k, value: num(v), name: k === "party" ? "No character" : known ? pcName(actor) : "Someone else" };
+    });
 }
 
 function partyMembers() {
@@ -2868,40 +2922,39 @@ function goalLine(g, path, { gm, steps = null, mode = "all", tick = false, party
   let stepNote = "";
   if (steps && steps.length) {
     const sp = stepProgress({ mode }, steps);
-    stepNote = `<span class="pct-chip" data-tooltip="${mode === "any" ? "Done when any one step is done" : "Done when every step not marked optional is done"}">${mode === "any" ? `any one of ${steps.length}` : `${sp.done} of ${sp.of} steps`}${sp.complete && g.state === "open" ? ", ready to mark done" : ""}</span>`;
+    stepNote = `<span class="pct-chip" data-tooltip-text="${mode === "any" ? "Done when any one step is done" : "Done when every step not marked optional is done"}">${mode === "any" ? `any one of ${steps.length}` : `${sp.done} of ${sp.of} steps`}${sp.complete && g.state === "open" ? ", ready to mark done" : ""}</span>`;
   }
   let link = "";
   if (gm && g.link?.tid) {
     const ls = linkState(g.link, Store.data.trackers);
-    link = `<span class="pct-chip pct-qlinkchip ${ls.met ? "pct-met" : ""}" data-tooltip="Watching: when it ${ls.met ? "got there" : "gets there"}, you get a card"><i class="fa-solid fa-link"></i> ${esc(ls.name || "?")}: ${esc(ls.text)}</span>`;
+    link = `<span class="pct-chip pct-qlinkchip ${ls.met ? "pct-met" : ""}" data-tooltip-text="Watching: when it ${ls.met ? "got there" : "gets there"}, you get a card"><i class="fa-solid fa-link"></i> ${esc(ls.name || "?")}: ${esc(ls.text)}</span>`;
   }
   return `${box}<span class="pct-qtext">${para(g.text) || (gm ? "<em>No text</em>" : "")}</span>${g.optional ? `<span class="pct-chip">optional</span>` : ""}${count}${stepNote}${link}`;
 }
 
-/** Quest groups (Followed leads, filed clues) opened or closed away from their default, kept in this browser. */
-const FOLDS_KEY = `${MOD}.folds`;
-const folds = (() => {
-  try {
-    const v = JSON.parse(globalThis.localStorage?.getItem(FOLDS_KEY) ?? "{}");
-    return v && typeof v === "object" ? v : {};
-  } catch {
-    return {};
-  }
-})();
-const foldOpen = (key, byDefault) => (Object.hasOwn(folds, key) ? !!folds[key] : byDefault);
+/** Quest groups (Followed leads, filed clues) opened or closed away from their default, kept in this browser for this world and user. */
+let foldCache = null;
+function foldMap() {
+  if (foldCache) return foldCache;
+  if (!local.key("folds")) return {};
+  foldCache = plainObject(local.get("folds", {}, { from: oldKey("folds") }));
+  return foldCache;
+}
+function foldOpen(key, byDefault) {
+  const folds = foldMap();
+  return Object.hasOwn(folds, key) ? !!folds[key] : byDefault;
+}
 function onFoldToggle(ev) {
   const d = ev.target;
   if (!(d instanceof HTMLDetailsElement) || !d.dataset.pctFold) return;
   const key = d.dataset.pctFold;
   const byDefault = d.dataset.foldDefault === "open";
   if (d.open === foldOpen(key, byDefault)) return;
+  const folds = foldMap();
   if (d.open === byDefault) delete folds[key];
   else folds[key] = d.open;
-  try {
-    localStorage.setItem(FOLDS_KEY, JSON.stringify(folds));
-  } catch {
-    /* no storage: it goes back to its default next time */
-  }
+  // Without storage it goes back to its default next time.
+  local.set("folds", folds);
 }
 
 /** A goal of a quest by id, with a heading for its clue group: the objective, or "objective: step". */
@@ -3154,7 +3207,7 @@ const GM = {
       const hi = Math.min(ladder[i + 1] ? num(ladder[i + 1].min) : max + 1, max + 1);
       const span = Math.max(0, hi - lo);
       const fill = clamp(num(t.value) - lo + 1, 0, span);
-      return `<div class="pct-band ${x.id === tier?.id ? "pct-current" : ""}" style="flex:${span}" data-tooltip="${esc(`${x.label}: ${x.range}`)}"><div style="width:${span ? (fill / span) * 100 : 0}%"></div></div>`;
+      return `<div class="pct-band ${x.id === tier?.id ? "pct-current" : ""}" style="flex:${span}" data-tooltip-text="${esc(`${x.label}: ${x.range}`)}"><div style="width:${span ? (fill / span) * 100 : 0}%"></div></div>`;
     }).join("")}</div>` : "";
     return `<div class="pct-line">${stepper("value", num(t.value), { steps: (t.steps?.length ? t.steps : [1]).map(Number), fmt: (v) => (max !== null ? `${v} / ${max}` : v) })}
         ${t.halve ? A("pctHalve", "fa-solid fa-divide", { label: "Halve", tip: "Halve the value, rounded down" }) : ""}</div>
@@ -3209,7 +3262,7 @@ const GM = {
     const track = `<ol class="pct-track">${t.obstacles.map((o, i) => `<li class="${i < cur ? "pct-done" : i === cur ? "pct-current" : ""}">
         <span class="pct-track-n">${i + 1}</span><span class="pct-track-name">${esc(o.name || `Obstacle ${i + 1}`)}</span>
         <span class="pct-track-pts">${num(o.progress)}/${num(o.points)}</span>
-        <span class="pct-marks">${i === cur ? `<i class="fa-solid fa-users" data-tooltip="The party"></i>` : ""}${q === i + 1 ? `<i class="fa-solid fa-person-running pct-quarry" data-tooltip="${esc(qLabel)}"></i>` : ""}</span></li>`).join("")}</ol>`;
+        <span class="pct-marks">${i === cur ? `<i class="fa-solid fa-users" data-tooltip="The party"></i>` : ""}${q === i + 1 ? `<i class="fa-solid fa-person-running pct-quarry" data-tooltip-text="${esc(qLabel)}"></i>` : ""}</span></li>`).join("")}</ol>`;
     const rows = t.obstacles.map((o, i) => `<div class="pct-obstacle ${i === cur ? "pct-current" : i < cur ? "pct-done" : ""}">
         <div class="pct-line">${eye(`obstacles.${i}`, o.revealed)}<strong>${i + 1}. ${esc(o.name || `Obstacle ${i + 1}`)}</strong>
           ${stepper(`obstacles.${i}.progress`, num(o.progress), { fmt: (v) => `${v} of ${num(o.points)}` })}
@@ -3229,7 +3282,7 @@ const GM = {
     const ip = infiltrationIP(t);
     const obstacles = t.obstacles.map((o, i) => {
       const prog = o.type === "individual"
-        ? `<div class="pct-indiv">${pcs.map((pc) => `<span class="pct-pc">${esc(pcName(pc))} ${stepper(`obstacles.${i}.byActor.${pc.id}`, num(o.byActor?.[pc.id]), { fmt: (v) => `${v}/${num(o.points)}` })}</span>`).join("")}</div>`
+        ? `<div class="pct-indiv">${pcs.map((pc) => `<span class="pct-pc">${esc(pcName(pc))} ${stepper(`obstacles.${i}.byActor.${pc.id}`, num(o.byActor?.[pc.id]), { fmt: (v) => `${v}/${num(o.points)}` })}</span>`).join("")}${othersAt(o, pcs).map((x) => `<span class="pct-pc pct-other">${esc(x.name)} ${stepper(`obstacles.${i}.byActor.${x.id}`, x.value, { fmt: (v) => `${v}/${num(o.points)}` })}</span>`).join("")}</div>`
         : stepper(`obstacles.${i}.progress`, num(o.progress), { fmt: (v) => `${v} of ${num(o.points)}` });
       return `<div class="pct-obstacle"><div class="pct-line">${eye(`obstacles.${i}`, o.revealed)}<strong>${esc(o.name || "Obstacle")}</strong><span class="pct-chip">${o.type === "individual" ? "Each PC" : "Group"}</span>${o.type === "individual" ? "" : prog}${o.checks.length ? cardBtn(o.id) : ""}</div>
         ${o.type === "individual" ? prog : ""}${o.text ? `<p class="pct-gm">${para(o.text)}</p>` : ""}${checkRows(t, o.id, o.checks, { gm: true })}</div>`;
@@ -3523,7 +3576,7 @@ const PLAYER = {
     const n = p.obstacles.length;
     const cur = p.current;
     const q = p.quarry ? p.quarry.at : null;
-    const track = `<ol class="pct-track">${p.obstacles.map((o, i) => `<li class="${i < cur ? "pct-done" : i === cur ? "pct-current" : ""}"><span class="pct-track-n">${i + 1}</span><span class="pct-track-name">${o.hidden ? "?" : esc(o.name || `Obstacle ${i + 1}`)}</span>${o.hidden ? "" : `<span class="pct-track-pts">${o.progress}/${o.points}</span>`}<span class="pct-marks">${i === cur ? `<i class="fa-solid fa-users"></i>` : ""}${q === i + 1 ? `<i class="fa-solid fa-person-running pct-quarry" data-tooltip="${esc(p.quarry.label)}"></i>` : ""}</span></li>`).join("")}</ol>`;
+    const track = `<ol class="pct-track">${p.obstacles.map((o, i) => `<li class="${i < cur ? "pct-done" : i === cur ? "pct-current" : ""}"><span class="pct-track-n">${i + 1}</span><span class="pct-track-name">${o.hidden ? "?" : esc(o.name || `Obstacle ${i + 1}`)}</span>${o.hidden ? "" : `<span class="pct-track-pts">${o.progress}/${o.points}</span>`}<span class="pct-marks">${i === cur ? `<i class="fa-solid fa-users"></i>` : ""}${q === i + 1 ? `<i class="fa-solid fa-person-running pct-quarry" data-tooltip-text="${esc(p.quarry.label)}"></i>` : ""}</span></li>`).join("")}</ol>`;
     const o = p.obstacles[cur];
     const now = o && !o.hidden ? `<div class="pct-obstacle pct-current"><strong>${esc(o.name)}</strong> <span class="pct-chip">${o.progress} of ${o.points}</span>${checkRows(p, o.id, o.checks, { gm: false })}</div>` : "";
     const status = cur >= n ? "The party is through." : q !== null && q > n ? `The ${esc(p.quarry.label.toLowerCase())} got away.` : "";
@@ -3532,7 +3585,7 @@ const PLAYER = {
   infiltration(p) {
     const pcs = partyMembers();
     const obstacles = p.obstacles.map((o) => `<div class="pct-obstacle"><div class="pct-line"><strong>${esc(o.name)}</strong><span class="pct-chip">${o.type === "individual" ? "Each PC" : `${o.progress} of ${o.points}`}</span></div>
-      ${o.type === "individual" ? `<div class="pct-indiv">${pcs.map((pc) => `<span class="pct-pc">${esc(pcName(pc))} ${num(o.byActor?.[pc.id])}/${o.points}</span>`).join("")}</div>` : ""}
+      ${o.type === "individual" ? `<div class="pct-indiv">${pcs.map((pc) => `<span class="pct-pc">${esc(pcName(pc))} ${num(o.byActor?.[pc.id])}/${o.points}</span>`).join("")}${othersAt(o, pcs).map((x) => `<span class="pct-pc pct-other">${esc(x.name)} ${x.value}/${o.points}</span>`).join("")}</div>` : ""}
       ${checkRows(p, o.id, o.checks, { gm: false })}</div>`).join("");
     const extras = (list, title) => (list.length ? `<div class="pct-sub">${title}</div>${list.map((o) => `<div class="pct-obstacle ${o.done ? "pct-done" : ""}"><strong>${esc(o.name)}</strong>${o.done ? "" : checkRows(p, o.id, o.checks, { gm: false })}</div>`).join("")}` : "");
     return `<div class="pct-line">${p.awareness !== null ? `<span class="pct-chip">Awareness ${p.awareness}</span>` : ""}<span class="pct-chip">Edge ${p.edge}</span><span class="pct-chip">Round ${p.round}</span><span class="pct-chip">${p.ip}${p.objective ? ` of ${p.objective}` : ""} infiltration</span></div>
@@ -3634,6 +3687,7 @@ function refresh() {
   changedSoon();
   refreshTimer = setTimeout(() => {
     renderPanel();
+    refreshPreviews();
     for (const app of openApps) {
       if (!app.rendered) continue;
       // Don't redraw under someone who is typing: the window's focusout calls refresh again when they leave the form.
@@ -3651,21 +3705,44 @@ function refresh() {
 /* Tracked-quest panel                                                 */
 /* ------------------------------------------------------------------ */
 
-const PIN_KEY = `${MOD}.pins`, PANEL_KEY = `${MOD}.panel`, PANEL_MAX = 3;
-function readJSON(key, fallback) {
-  try {
-    return JSON.parse(localStorage.getItem(key)) ?? fallback;
-  } catch {
-    return fallback;
+const PIN_KEY = "pins", PANEL_KEY = "panel", PANEL_MAX = 3;
+/** A value kept in this browser for this world and user (pins, the panel's place and folds). */
+const readJSON = (what, fallback) => local.get(what, fallback, { from: oldKey(what) });
+/** Without storage it lasts until the page reloads. */
+const writeJSON = (what, value) => void local.set(what, value);
+/**
+ * Forget what this browser keeps for trackers that are gone: New/Updated marks, quest folds, pins, the panel's folds,
+ * folded cards and open notes. `ids` holds every tracker this user can see; with `all: false` only the marks go.
+ */
+function pruneKept(ids, { all = true } = {}) {
+  if (!local.key("ui")) return;
+  // Fold keys read "f:<quest>", "g:<quest>:<goal>" or "h:<quest>:<list>", and a quest id may hold anything but a space.
+  const foldQuest = (key) => {
+    const rest = key.slice(2);
+    if (ids.has(rest)) return true;
+    for (const id of ids) if (rest.startsWith(`${id}:`)) return true;
+    return false;
+  };
+  const seen = seenMap();
+  const goneSeen = Object.keys(seen).filter((id) => !ids.has(id));
+  for (const id of goneSeen) delete seen[id];
+  if (goneSeen.length) local.set("seen", seen);
+  if (!all) return;
+  const folds = foldMap();
+  const goneFolds = Object.keys(folds).filter((k) => !foldQuest(k));
+  for (const k of goneFolds) delete folds[k];
+  if (goneFolds.length) local.set("folds", folds);
+  const pins = pinned();
+  if (pins.some((id) => !ids.has(id))) writeJSON(PIN_KEY, pins.filter((id) => ids.has(id)));
+  const panel = plainObject(readJSON(PANEL_KEY, {}));
+  if (Array.isArray(panel.folded) && panel.folded.some((id) => !ids.has(id))) writeJSON(PANEL_KEY, { ...panel, folded: panel.folded.filter((id) => ids.has(id)) });
+  const ui = loadUI();
+  const keep = (list) => (Array.isArray(list) ? list.filter((id) => ids.has(id)) : []);
+  if (keep(ui.closed).length !== (ui.closed?.length ?? 0) || keep(ui.notesOpen).length !== (ui.notesOpen?.length ?? 0)) {
+    local.set("ui", { ...ui, closed: keep(ui.closed), notesOpen: keep(ui.notesOpen) });
   }
 }
-function writeJSON(key, value) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    /* no storage: it lasts until the page reloads */
-  }
-}
+
 /** The quests this user pinned, kept in this browser. */
 function pinned() {
   const v = readJSON(PIN_KEY, []);
@@ -3691,7 +3768,7 @@ function togglePin(id) {
     const focus = open.filter((t) => t.focus && !kept.includes(t.id)).map((t) => t.id);
     if (focus.includes(id)) return void ui.notifications.info("That quest is the party's focus, so it's in the panel already.");
     if (kept.length + focus.length >= PANEL_MAX) {
-      ui.notifications.warn(`The quest panel shows ${PANEL_MAX} quests${focus.length ? `, ${focus.length} of them the party's focus` : ""}. Unpin one first.`);
+      ui.notifications.warn(safe`The quest panel shows ${PANEL_MAX} quests${focus.length ? `, ${focus.length} of them the party's focus` : ""}. Unpin one first.`);
       return;
     }
     writeJSON(PIN_KEY, [...kept, id]);
@@ -3723,13 +3800,13 @@ async function setGoalState(tid, { path = null, goal = null }, right = false) {
 }
 
 let panelEl = null;
-const qpBtn = (qp, icon, tip, data = {}) => `<a class="pct-qp-btn" data-qp="${qp}" ${dataAttrs(data)} data-tooltip="${esc(tip)}"><i class="${icon}"></i></a>`;
+const qpBtn = (qp, icon, tip, data = {}) => `<a class="pct-qp-btn" data-qp="${qp}" ${dataAttrs(data)} data-tooltip-text="${esc(tip)}"><i class="${icon}"></i></a>`;
 
 /** One open objective or step: a box to tick, its text, its count. The GM also sees what players don't. */
 function panelGoal(q, g, tick, steps = null) {
   const gm = game.user.isGM;
   const box = tick
-    ? `<a class="pct-qp-box" data-qp="tick" data-tid="${esc(q.id)}" data-goal="${esc(g.id)}" data-tooltip="${gm ? "Click: done. Right-click: failed." : partyTicks(q) ? "Mark done" : "Mark done. The GM is told."}"><i class="fa-regular fa-square"></i></a>`
+    ? `<a class="pct-qp-box" data-qp="tick" data-tid="${esc(q.id)}" data-goal="${esc(g.id)}" data-tooltip-text="${gm ? "Click: done. Right-click: failed." : partyTicks(q) ? "Mark done" : "Mark done. The GM is told."}"><i class="fa-regular fa-square"></i></a>`
     : `<i class="pct-qp-box fa-regular fa-square"></i>`;
   const chips = [g.count !== null && g.count !== undefined ? `${num(g.have)} of ${g.count}` : "", g.optional ? "optional" : ""];
   if (steps?.length) {
@@ -3818,6 +3895,7 @@ function onPanelDrag(ev) {
   const up = () => {
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", up);
+    window.removeEventListener("pointercancel", up);
     if (!panelEl) return;
     const st = readJSON(PANEL_KEY, {});
     writeJSON(PANEL_KEY, { ...st, left: parseInt(panelEl.style.left, 10), top: parseInt(panelEl.style.top, 10) });
@@ -3825,6 +3903,7 @@ function onPanelDrag(ev) {
   };
   window.addEventListener("pointermove", move);
   window.addEventListener("pointerup", up);
+  window.addEventListener("pointercancel", up);
 }
 
 /** Can this user see quests at all? Players need "Players can open the trackers". */
@@ -3853,7 +3932,7 @@ const RL_BAD = /[,\]|{}\r\n]/;
 /** A part's reveal-link tool in the GM's view: a link icon to drag or click (copy), or a box while picking parts. */
 function rlTool(id, pick) {
   if (RL_BAD.test(String(id))) return pick ? `<span class="pct-rlpick pct-rl-bad" data-tooltip="Its id has a character a reveal link can't hold"><i class="fa-solid fa-link-slash"></i></span>` : "";
-  if (pick) return `<label class="pct-rlpick" data-tooltip="${pick.has(id) ? "In the reveal link. Click to take it out." : "Click to put it in the reveal link"}"><input type="checkbox" data-rl-pick="${esc(id)}" ${pick.has(id) ? "checked" : ""}><i class="fa-solid fa-link"></i></label>`;
+  if (pick) return `<label class="pct-rlpick" data-tooltip-text="${pick.has(id) ? "In the reveal link. Click to take it out." : "Click to put it in the reveal link"}"><input type="checkbox" data-rl-pick="${esc(id)}" ${pick.has(id) ? "checked" : ""}><i class="fa-solid fa-link"></i></label>`;
   return `<a class="pct-rl-drag pct-rl-one" draggable="true" tabindex="0" role="button" data-action="pctRLCopy" data-rl="${esc(id)}" data-tooltip="Reveal link: drag it into a journal page, or click to copy it. Players who can read the page see its label."><i class="fa-solid fa-link"></i></a>`;
 }
 
@@ -4068,13 +4147,13 @@ async function revealFromLink(questRef, partList, { ask = true, trusted = true }
     if (r.error) return void ui.notifications.warn(esc(r.error));
     const plan = await revealPlan(r);
     if (!plan.rows.length) {
-      if (r.missing.length) ui.notifications.warn(`${esc(r.q.name)}: nothing with the id ${r.missing.map(esc).join(", ")}.`);
-      if (r.questOnly || r.parts.length) ui.notifications.info(`${esc(r.q.name)}: players already see all of that.`);
+      if (r.missing.length) ui.notifications.warn(safe`${r.q.name}: nothing with the id ${r.missing.join(", ")}.`);
+      if (r.questOnly || r.parts.length) ui.notifications.info(safe`${r.q.name}: players already see all of that.`);
       return;
     }
     // A link a player may have written (chat, a page a player last changed) always shows the list.
     if (!trusted) ask = true;
-    if (!ask && r.missing.length) ui.notifications.warn(`${esc(r.q.name)}: nothing with the id ${r.missing.map(esc).join(", ")}.`);
+    if (!ask && r.missing.length) ui.notifications.warn(safe`${r.q.name}: nothing with the id ${r.missing.join(", ")}.`);
     const all = (n) => plan.rows.filter((x) => x.name === n).map((x) => x.value);
     const choice = ask ? await chooseReveal(r, plan) : { quest: all("quest").length > 0, rows: all("row"), leadq: all("leadq"), leadc: all("leadc"), loot: all("loot") };
     if (choice) await applyReveal(r.q.id, choice);
@@ -4321,15 +4400,35 @@ function onQuestLink(ev) {
   openQuest(id);
 }
 
+/** The trackers window: one at a time. open(setup) runs setup on the window, new or open, before drawing it. */
+const theWindow = singleWindow((setup) => {
+  const app = new TrackersApp();
+  setup?.(app);
+  return app;
+}, { reuse: (app, setup) => setup?.(app) });
+
+/**
+ * Open the window through theWindow, once a restore of the window already open is done: drawn while it's still
+ * collapsed it would be sized wrong, and a window closed during its restore stays closed.
+ */
+async function openWindow(setup) {
+  const cur = theWindow.current();
+  if (cur && (cur.minimized || cur.restoring)) {
+    await cur.maximize();
+    if (!cur.rendered || theWindow.current() !== cur) return cur;
+  }
+  return theWindow.open(setup);
+}
+
 /** Open the window on a quest, with one of its sections open for editing if asked. */
 function openQuest(id, sec = null) {
   if (!game.user.isGM && !game.settings.get(MOD, "playerAccess")) return;
-  const app = [...openApps][0] ?? new TrackersApp();
-  app.state.tab = "quest";
-  app.state.quest = id;
-  if (sec) app.state.qedit.add(`${id}:${sec}`);
-  saveUI(app.state);
-  app.show();
+  return openWindow((app) => {
+    app.state.tab = "quest";
+    app.state.quest = id;
+    if (sec) app.state.qedit.add(`${id}:${sec}`);
+    saveUI(app.state);
+  });
 }
 
 async function onPanelClick(ev) {
@@ -4365,31 +4464,15 @@ async function onPanelClick(ev) {
 }
 
 /** Tab, shown quest, folded cards and open GM-notes boxes, kept in this browser across redraws and reopening. */
-const UI_KEY = `${MOD}.ui`;
-function loadUI() {
-  try {
-    return JSON.parse(localStorage.getItem(UI_KEY)) ?? {};
-  } catch {
-    return {};
-  }
-}
+const loadUI = () => plainObject(local.get("ui", {}, { from: oldKey("ui") }));
 function saveUI(state) {
-  try {
-    localStorage.setItem(UI_KEY, JSON.stringify({ tab: state.tab, closed: [...state.closed], notesOpen: [...state.notesOpen], quest: state.quest }));
-  } catch {
-    /* no storage: the state lives only in this window */
-  }
+  // Without storage the state lives only in this window.
+  local.set("ui", { tab: state.tab, closed: [...state.closed], notesOpen: [...state.notesOpen], quest: state.quest });
 }
 
-const SIZE_KEY = `${MOD}.size`;
 /** The window's last size and place in this browser, kept inside the screen. */
 function loadSize() {
-  let v;
-  try {
-    v = JSON.parse(localStorage.getItem(SIZE_KEY));
-  } catch {
-    return {};
-  }
+  const v = local.get("size", null, { from: oldKey("size") });
   if (!v || typeof v !== "object") return {};
   // A size saved while the window was collapsed is no size at all.
   if (!(v.width >= 400 && v.height >= 250)) return {};
@@ -4406,13 +4489,8 @@ function saveSize(position) {
   // Copy now: Foundry hands over its own live position object, which may change before the save runs.
   const pos = { left: position.left, top: position.top, width: position.width, height: position.height };
   clearTimeout(sizeTimer);
-  sizeTimer = setTimeout(() => {
-    try {
-      localStorage.setItem(SIZE_KEY, JSON.stringify({ width: pos.width, height: pos.height, left: pos.left, top: pos.top }));
-    } catch {
-      /* no storage: the window opens at its default size */
-    }
-  }, 300);
+  // Without storage the window opens at its default size.
+  sizeTimer = setTimeout(() => local.set("size", { width: pos.width, height: pos.height, left: pos.left, top: pos.top }), 300);
 }
 
 /** Wait for an element's own transitions to end; a hidden tab pauses them, so after a second they're finished by hand. */
@@ -4591,7 +4669,8 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
       }).join("")}</ul>`;
     }).join("");
     const chosen = list.find((q) => q.id === this.state.quest);
-    if (chosen && !game.user.isGM) markSeen(chosen);
+    // A minimized window shows nothing, so its quest isn't seen until it's restored.
+    if (chosen && !game.user.isGM && !this.minimized) markSeen(chosen);
     return `<div class="pct-quests"><nav class="pct-qlist">${groups}</nav><div class="pct-qdetail">${chosen ? this.#card(chosen) : ""}</div></div>`;
   }
 
@@ -4737,6 +4816,10 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     if (!this.minimized && this.rendered) this.#beforeMin = { width: this.position.width, height: this.position.height };
     return super.minimize();
   }
+  /** True while a restore from minimized is under way. */
+  get restoring() {
+    return !!this.#restore;
+  }
   maximize() {
     // A restore already under way is the one to wait for.
     if (this.#restore) return this.#restore;
@@ -4763,6 +4846,8 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
       await settle(this.element);
       // Not if it was closed or minimized again meanwhile.
       if (was && this.rendered && !this.minimized) this.setPosition(was);
+      // A player's quest is seen once the window shows it again.
+      if (!game.user.isGM && this.rendered && !this.minimized) this.render();
     } finally {
       this.#restoring = false;
     }
@@ -4775,17 +4860,6 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     if (![position.width, position.height, position.left, position.top].every(Number.isFinite)) return;
     if (position.width < 400 || position.height < 250) return;
     saveSize(position);
-  }
-
-  /** Draw the window, restoring it first if it's minimized (a draw that ends while it's collapsed sizes it wrong). */
-  async show() {
-    if (this.minimized || this.#restore) {
-      const open = this.rendered;
-      await this.maximize();
-      // Closed while it was being restored: don't open it again.
-      if (open && !this.rendered) return this;
-    }
-    return this.render({ force: true });
   }
 
   async #onChange(ev) {
@@ -4802,7 +4876,7 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     else if (type === "date") {
       value = parseDate(el.value);
       if (value === undefined) {
-        ui.notifications.warn(`Couldn't read "${el.value}" as a date. Try "15 ${months()[0]?.short ?? "Month"}" or "15 ${months()[0]?.short ?? "Month"} ${today().y}".`);
+        ui.notifications.warn(safe`Couldn't read "${el.value}" as a date. Try "${exampleDate()}" or "${exampleDate(true)}".`);
         return refresh();
       }
     } else if (type === "idlist") {
@@ -4870,7 +4944,7 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     if (!actor) return;
     const where = zone.dataset.drop;
     const link = { uuid: actor.uuid, name: actor.prototypeToken?.name?.trim() || actor.name, img: actor.img, type: actor.type };
-    if (where.endsWith(".actor") && actor.type !== "loot") ui.notifications.info(`${actor.name} isn't a loot actor. Linked anyway.`);
+    if (where.endsWith(".actor") && actor.type !== "loot") ui.notifications.info(safe`${actor.name} isn't a loot actor. Linked anyway.`);
     await mutateTracker(card.dataset.tid, (t) => {
       if (where === "npc") t.npc = link;
       else if (where === "giver") t.giver = link;
@@ -4914,7 +4988,7 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     const text = area?.value.trim();
     if (!t || !text) return;
     if (this.isGM) {
-      if ((t.pnotes?.length ?? 0) >= NOTE_MAX) return ui.notifications.warn(`The Party Journal of ${esc(t.name)} has ${NOTE_MAX} entries, the most it holds. Delete some first.`);
+      if ((t.pnotes?.length ?? 0) >= NOTE_MAX) return ui.notifications.warn(safe`The Party Journal of ${t.name} has ${NOTE_MAX} entries, the most it holds. Delete some first.`);
       await mutateTracker(t.id, (tr) => applyQuestNote(tr, "add", { by: game.user.id, name: "GM", text, isGM: true }) || undefined, { notify: false });
     } else if (game.user.isGM) {
       return;
@@ -5091,7 +5165,7 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
   static async #onOpenActor(event, target) {
     const actor = await fromUuid(target.dataset.uuid);
     if (!actor) return ui.notifications.warn("That actor no longer exists.");
-    if (!actor.testUserPermission(game.user, "LIMITED")) return ui.notifications.info(`You can't open ${actor.name} yet.`);
+    if (!actor.testUserPermission(game.user, "LIMITED")) return ui.notifications.info(safe`You can't open ${actor.name} yet.`);
     actor.sheet.render(true);
   }
 
@@ -5313,7 +5387,8 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
   static async #onHalve(event, target) {
     const id = target.closest("[data-tid]").dataset.tid;
     await mutateTracker(id, (t) => {
-      t.value = Math.floor(num(t.value) / 2);
+      const [lo, hi] = bounds(t, "value");
+      t.value = clamp(Math.floor(num(t.value) / 2), lo, hi);
     });
   }
 
@@ -5369,32 +5444,29 @@ class TrackersApp extends foundry.applications.api.ApplicationV2 {
     try {
       data = JSON.parse(await foundry.utils.readTextFromFile(file));
     } catch (err) {
-      return ui.notifications.error(`Campaign Trackers: "${file.name}" isn't valid JSON (${err.message}).`);
+      return ui.notifications.error(safe`Campaign Trackers: "${file.name}" isn't valid JSON (${err.message}).`);
     }
-    if (!Array.isArray(data?.trackers)) return ui.notifications.error(`Campaign Trackers: "${file.name}" doesn't hold tracker data (no "trackers" list).`);
+    if (!Array.isArray(data?.trackers)) return ui.notifications.error(safe`Campaign Trackers: "${file.name}" doesn't hold tracker data (no "trackers" list).`);
     const ok = await foundry.applications.api.DialogV2.confirm({
       window: { title: "Import tracker data" },
       content: `<p>Replace everything here (${Store.data.trackers.length} trackers) with the ${data.trackers.length} trackers in <strong>${esc(file.name)}</strong>? Values, reveals and notes all come from the file. This can't be undone.</p>`,
     });
     if (!ok) return;
     await Store.replace(data);
-    ui.notifications.info(`Campaign Trackers: imported ${Store.data.trackers.length} trackers from "${file.name}".`);
+    ui.notifications.info(safe`Campaign Trackers: imported ${Store.data.trackers.length} trackers from "${file.name}".`);
   }
 
   /** Open the window, on a tab if one is named (see findTab). */
   static open(tab = null) {
     if (!game.user.isGM && !game.settings.get(MOD, "playerAccess")) return ui.notifications.warn("The GM hasn't opened the campaign trackers to players.");
-    const app = [...openApps][0] ?? new TrackersApp();
-    if (tab != null) {
-      const to = findTab(tab);
-      if (!to) console.warn(`${MOD} | api.open: no tab or tracker called "${tab}"; opening as last left`);
-      else {
-        app.state.tab = to.kind;
-        if (to.kind === "quest" && to.tid) app.state.quest = to.tid;
-        saveUI(app.state);
-      }
-    }
-    return app.show();
+    const to = tab == null ? null : findTab(tab);
+    if (tab != null && !to) console.warn(`${MOD} | api.open: no tab or tracker called "${tab}"; opening as last left`);
+    return openWindow((app) => {
+      if (!to) return;
+      app.state.tab = to.kind;
+      if (to.kind === "quest" && to.tid) app.state.quest = to.tid;
+      saveUI(app.state);
+    });
   }
 }
 
@@ -5461,11 +5533,7 @@ Hooks.once("init", () => {
 
 Hooks.once("ready", () => {
   game.socket.on(SOCKET, onSocket);
-  if (game.user.isGM) {
-    announceTab(true);
-    setInterval(() => announceTab(false), 15000);
-    window.addEventListener("beforeunload", () => game.socket.emit(SOCKET, { type: "gmbye", client: CLIENT_ID }));
-  }
+  tabs.start();
   // Players start from what is already shared, so only later changes bring notices.
   if (!game.user.isGM) lastQuests = questsOf(game.settings.get(MOD, "public"));
 });
@@ -5517,12 +5585,15 @@ Hooks.once("ready", async () => {
     syncPresets,
     get: (id) => clone(Store.get(id)),
     list: () => clone(Store.data.trackers),
-    /** Change a field by an amount, e.g. adjust("my-heat", "value", 1). GM only. */
+    /**
+     * Change a field by an amount, e.g. adjust("my-heat", "value", 1). For a player it reaches only a party quest they
+     * may edit, through the same checks as the window.
+     */
     adjust: (id, path, delta) => mutateTracker(id, (t) => {
       const [lo, hi] = bounds(t, path);
       foundry.utils.setProperty(t, path, clamp(num(foundry.utils.getProperty(t, path)) + Number(delta), lo, hi));
     }),
-    /** Set a field, e.g. set("my-clock", "segments.2.state", "filled"). GM only. */
+    /** Set a field, e.g. set("my-clock", "segments.2.state", "filled"). For a player, as adjust. */
     set: (id, path, value) => mutateTracker(id, (t) => foundry.utils.setProperty(t, path, value)),
     reveal: (id, revealed = true) => mutateTracker(id, (t) => {
       t.revealed = !!revealed;
@@ -5535,7 +5606,7 @@ Hooks.once("ready", async () => {
       const j = id ? game.journal.get(id) : Store.journal;
       if (!j || !game.user.isGM) return ui.notifications.warn("Campaign Trackers: no such journal entry.");
       await j.setFlag(SCOPE, "allowDelete", true);
-      ui.notifications.info(`Campaign Trackers: "${j.name}" can be deleted now.`);
+      ui.notifications.info(safe`Campaign Trackers: "${j.name}" can be deleted now.`);
     },
   };
   game.modules.get(MOD).api = api;
@@ -5545,15 +5616,25 @@ Hooks.once("ready", async () => {
     storeReady = true;
     // Links drawn before the data loaded (chat at startup) said so; draw them again.
     repaintQuestLinks();
-    if (isPrimaryGM() && !Store.broken) await publish(Store.data);
-    // Chat drew its messages before the data was loaded, so Apply boxes and proposal controls are missing: draw them again.
+    // Chat drew its messages before the data was loaded, so Apply boxes and the controls on proposal, check,
+    // completion and follow cards are missing: draw them again.
     for (const m of game.messages.contents.slice(-100)) {
-      if (m.flags?.[SCOPE]?.proposal || m.flags?.[SCOPE]?.adhoc || m.flags?.[SCOPE]?.qprompt || parseTag(m.flags?.pf2e?.context?.options)) ui.chat?.updateMessage?.(m);
+      const f = m.flags?.[SCOPE];
+      if (f?.proposal || f?.adhoc || f?.qprompt || f?.qfollow || parseTag(m.flags?.pf2e?.context?.options)) ui.chat?.updateMessage?.(m);
     }
+    if (storeReady && !Store.broken) pruneKept(new Set(Store.data.trackers.map((t) => t.id)));
     Hooks.callAll(`${MOD}.ready`, api);
-    await syncPresets();
-    scheduleReminders();
+    // The lead tab brings the players' copy up to date and loads presets. The election takes a moment to settle,
+    // so the rest of startup doesn't wait for it.
+    (async () => {
+      if (!Store.broken && (await tabs.leadNow())) await publish(Store.data);
+      await syncPresets();
+      scheduleReminders();
+    })().catch((err) => console.error(`${MOD} | startup`, err));
   } else {
+    const pub = game.settings.get(MOD, "public");
+    // A player sees only what's revealed: prune only their marks, not their pins and folds.
+    if (Array.isArray(pub?.trackers)) pruneKept(new Set(pub.trackers.map((t) => t.id)), { all: false });
     Hooks.callAll(`${MOD}.ready`, api);
   }
   renderPanel();
@@ -5585,7 +5666,7 @@ Hooks.on("updateJournalEntry", (doc, changes) => {
 /** The data journal can't be deleted by accident: it needs the allowDelete flag (api.unlockStore). */
 Hooks.on("preDeleteJournalEntry", (doc) => {
   if (!doc.getFlag(SCOPE, "store") || doc.getFlag(SCOPE, "allowDelete")) return;
-  ui.notifications.warn(`Campaign Trackers: "${doc.name}" holds your tracker data and wasn't deleted. Export it first, then run game.modules.get("${MOD}").api.unlockStore("${doc.id}") and delete it.`);
+  ui.notifications.warn(safe`Campaign Trackers: "${doc.name}" holds your tracker data and wasn't deleted. Export it first, then run game.modules.get("${MOD}").api.unlockStore("${doc.id}") and delete it.`);
   return false;
 });
 Hooks.on("deleteJournalEntry", (doc) => {
@@ -5626,8 +5707,8 @@ Hooks.on("deleteChatMessage", (message) => {
   for (const [k, v] of rerollStash) if (Date.now() - v.at > 120000) rerollStash.delete(k);
 });
 /** The reroll's new card: the active GM marks it, so the offer to replace survives a reload. */
-Hooks.on("createChatMessage", (message) => {
-  if (!isPrimaryGM() || !message.flags?.pf2e?.context?.isReroll) return;
+Hooks.on("createChatMessage", async (message) => {
+  if (!message.flags?.pf2e?.context?.isReroll || !(await tabs.leadNow())) return;
   const key = rerollKey(message);
   const hit = key ? rerollStash.get(key) : null;
   if (!hit) return;
@@ -5637,8 +5718,8 @@ Hooks.on("createChatMessage", (message) => {
  * A roll from a GM's check card ticks that character off on the card, and a roll from an approved
  * proposal marks the proposal rolled. The active GM's client does it, since it can change anyone's message.
  */
-Hooks.on("createChatMessage", (message) => {
-  if (!isPrimaryGM()) return;
+Hooks.on("createChatMessage", async (message) => {
+  if (!parseTag(message.flags?.pf2e?.context?.options) || !(await tabs.leadNow())) return;
   const ctx = message.flags?.pf2e?.context;
   const tag = parseTag(ctx?.options);
   if (!tag || !ctx.actor || ctx.isReroll) return;

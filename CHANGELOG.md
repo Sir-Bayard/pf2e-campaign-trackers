@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.6.1
+
+- A player's "followed a lead" card keeps its buttons after you reload, instead of saying the lead is gone.
+- The Apply line on a roll card keeps up when other rolls are applied first, so it always shows where the tracker will end up.
+- Infiltration: points at an "Each PC" obstacle earned by someone outside the party (a character who has left it, or a roll made with no character) show as their own row, and you can change them there.
+- Halve no longer takes a track below its lowest value.
+- New and Updated marks, pins, folds, the last tab and the window's size and place are kept for each world and each user, so two people logging in from one browser no longer share them. What you had carries over (New and Updated marks to the first player to log in from that browser); the GM's saved state for trackers that are gone is cleared, and players' marks for quests they can't see.
+- A quest left on screen in a minimized window keeps its Updated mark until the window is restored.
+- Opening the window twice in quick succession (the hotkey, a macro, another module) no longer makes two windows.
+- When you close or reload one of two browser tabs logged in as the GM, the other takes over answering players within moments, instead of after up to two and a half minutes.
+- Names in notices and tooltips show as written, never as formatting.
+- A date a player gives a party quest has to be a real day on your calendar.
+- A drag of the quest panel that the browser cancels ends cleanly.
+- The date box's example uses your calendar's first month.
+- README: what `api.adjust` and `api.set` do when a player runs them, DCs on cards in the privacy note, and Alt+T in Firefox.
+
 ## 2.6.0
 
 - Quests stay readable as they grow. Clues show newest revealed first, for you and the players (clues revealed before this version keep their order, below new ones).

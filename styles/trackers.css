@@ -102,6 +102,7 @@
 .pct-app .pct-obstacle.pct-done { opacity: 0.6; }
 .pct-app .pct-indiv { display: flex; flex-wrap: wrap; gap: 4px 12px; }
 .pct-app .pct .pct-pc { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
+.pct-app .pct .pct-pc.pct-other { font-style: italic; opacity: 0.85; }
 
 /* Influence */
 .pct-app .pct-npc { display: inline-flex; align-items: center; gap: 6px; padding: 2px 6px 2px 2px; border: 1px solid var(--pct-line); border-radius: 18px; }
