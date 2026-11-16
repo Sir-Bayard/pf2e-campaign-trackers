@@ -1,4 +1,4 @@
-/* Sir Bayard's module kit: single-window 1. Copied unchanged into each module that uses it; edit the kit's source,
+/* Sir Bayard's module kit: single-window 2. Copied unchanged into each module that uses it; edit the kit's source,
  * not this copy. */
 
 /**
@@ -14,6 +14,8 @@
  * @param {(app, ...args) => void} [opts.reuse]   applies open()'s arguments to the window already open (a tab to
  *   show, an entry to select) before it is drawn again
  * @param {number} [opts.wait]   the longest open() waits for a close in progress (ms); past it, open() goes ahead
+ * A window class may offer a `restoring` getter (true while a restore from minimized runs); open() then waits for
+ * that restore through `maximize()` before drawing, and leaves the window closed if it was closed meanwhile.
  * @returns {{ open: (...args) => Promise<object>, current: () => object|null }}
  */
 export function singleWindow(make, { reuse, wait = 5000 } = {}) {
@@ -64,7 +66,13 @@ export function singleWindow(make, { reuse, wait = 5000 } = {}) {
       reuse?.(a, ...args);
     } else a = build(args);
     try {
-      if (a.minimized) await a.maximize?.();
+      // A window may say it's being restored (`restoring`): its minimized flag can be off already while the restore
+      // runs, and a draw then would size it wrong.
+      if (a.minimized || a.restoring) {
+        await a.maximize?.();
+        // Closed while it was being restored: leave it closed.
+        if (app !== a) return a;
+      }
       await a.render({ force: true });
     } catch (err) {
       // A first draw that failed leaves nothing worth keeping.

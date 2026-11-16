@@ -1,5 +1,51 @@
 # Changelog
 
+## 2.7.0
+
+**Rules from the PF2e system**
+- The DC for each level, the Easy and Hard steps beside a DC, GM Core's reputation tiers and range, and the points each degree of success earns in Victory Points, Influence, Research, Chases and Infiltration are read from the PF2e system's GM Screen journal when a GM logs in. The module keeps no copy of these tables. If one can't be read (a system update moved it), you're told once, and the feature asks you for the number.
+- Points for each result: an empty field uses the rules, shown faintly. A result the rules give no plain number for (on PF2e 8.7.0, a failure in Victory Points, Influence, Research and Chases) says so on the roll card, with nothing to apply, until you set one (0 counts it as no points). Trackers you already have keep the numbers they had.
+- Infiltration is won when the party has overcome every obstacle (a group obstacle at its points, one for each character when every party member has). The old Objective is now an optional IP goal, which counts infiltration points as before. Infiltration and awareness points follow the rules, and you can set your own. A new infiltration has no awareness thresholds: you pick them, as the rules have no table for them.
+- Verified on PF2e 8.7.0.
+
+**Keyboard**
+- The whole window and the quest panel work from the keyboard: every button, tab, eye, box and fold takes focus, Enter and Space press them, the arrow keys move along the tab list, focus stays put when the window redraws, and the window's keys no longer reach Foundry's own while you work in it (Space doesn't pause the game). Shift+Enter does what a right-click does on an objective's box or a clock segment.
+- File a clue without dragging it: its grip opens a list of the objectives and steps. Copy a quest's link from its menu. Move the quest panel with the arrow keys on its Move button.
+
+**New**
+- **Undo** at the foot of the tab list (or Ctrl+Z) takes back the last change you made in the window or the quest panel: a tick, a counter, an edit, a deleted row or tracker. Up to twenty, newest first. Roll cards keep their own Undo.
+- **Duplicate**, **Export this tracker** and **Import a tracker**: reuse a skill challenge, build next session's chase from the last one, or share a quest with another GM.
+- **Apply these as they are rolled** on a check you call in a skill challenge: each called character's first roll goes on as it's rolled, at the check's DC, with Undo on each card. **Apply all** on a tracker's card applies every roll waiting in chat.
+- With one check per character per round, a skill challenge shows who has rolled this round.
+- **Since last session** on the Quests tab: what the party learned and did since a time (reveals, objectives done or failed, leads followed, status changes). `api.since()` gives it to macros.
+- Players who log in to quests that changed while they were away get one notice, and the quest panel's header counts them.
+- Pressure tracks can keep their band from players ("Players see the band"); Influence and Research can keep their totals ("Players see the number"), and then show players no threshold numbers or points per check either.
+- A quest's sections fold to their headings, remembered for each quest.
+
+**Changed**
+- A quest's header keeps the focus star, the eye and post to chat in sight; the rest is in a menu, with Delete last and set apart. Every other tracker's Delete moves into its menu too.
+- On a quest, the eyes of rows already revealed are dimmed, so what players can't see yet stands out.
+- Chat cards speak as their tracker, not as its kind.
+- The module's text is in `lang/en.json`, ready for translation.
+- A player's request (a tick, a follow, a note, a party quest edit) always gets an answer from the GM's client; with none in fifteen seconds, the player is told it may not have gone through.
+- Date reminders pause if the world's calendar isn't the one the dates were set on (a calendar module turned off, say), instead of firing for every date; **Use this calendar** resumes them.
+
+**Fixed**
+- Edits and a row's buttons find their row by its id, so a row added, moved or removed meanwhile (in another tab, or by a player) no longer sends a click or an edit to the wrong row.
+- The window redraws only the trackers that changed, and does less work on each draw.
+- A roll card's Undo brings back a result that the challenge's list of fifty had pushed out.
+- Two GMs approving the same proposal at the same moment add it once.
+- A drop onto a reveal link while that page's editor is open is refused (the editor's save would undo it), and the notice names the page.
+- In a reveal link's list, a step unticks with the objective it sits under.
+- On an infiltration, a row for someone outside the party has its own button to take it away.
+- A player's request about a row they can't see gets the same answer as one about a row that doesn't exist.
+- Restoring the window from minimized while it redraws no longer leaves it marked minimized; it opens whole from the quest panel and the hotkey.
+- The chase's other side shows as "Quarry" when it has no name.
+- A renamed character redraws the window only when it's open.
+
+**Documentation**
+- The README is short, with the details in [the guide](docs/guide.md), [Quests](docs/quests.md) and [Skill challenges](docs/skill-challenges.md): what `api.adjust` and `api.set` do when a player runs them, DCs on cards in the privacy note, Alt+T in Firefox, what needs a GM logged in, and what isn't tamper-proof.
+
 ## 2.6.1
 
 - A player's "followed a lead" card keeps its buttons after you reload, instead of saying the lead is gone.

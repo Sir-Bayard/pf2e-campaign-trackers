@@ -1,4 +1,4 @@
-/* Sir Bayard's module kit: window-memory 1. Copied unchanged into each module that uses it; edit the kit's source,
+/* Sir Bayard's module kit: window-memory 2. Copied unchanged into each module that uses it; edit the kit's source,
  * not this copy. Needs storage.mjs beside it. */
 
 import { storage } from "./storage.mjs";
@@ -80,6 +80,21 @@ export function rememberWindow(Base, { module, name, size = true, from } = {}) {
     #restoring = false;
     #restore = null;
     #minimizing = null;
+    #collapsed = false;
+
+    /**
+     * True from a minimize until its restore is done. Unlike `minimized`, it holds during a redraw: ApplicationV2's
+     * `minimized` reads false whenever the window isn't `rendered`, and `rendered` is false during every re-render, so
+     * code a render runs (a "seen" mark) can't tell a minimized window from an open one by `minimized`.
+     */
+    get collapsed() {
+      return this.#collapsed;
+    }
+
+    /** True while a restore from minimized (or a minimize a restore has to wait for) is under way. */
+    get restoring() {
+      return !!(this.#restore || this.#minimizing);
+    }
 
     /** The window's options come first (as ApplicationV2's do); only a plain options object gets the saved place. */
     constructor(options = {}, ...rest) {
@@ -102,6 +117,7 @@ export function rememberWindow(Base, { module, name, size = true, from } = {}) {
     minimize() {
       if (this.#minimizing) return this.#minimizing;
       if (!this.minimized && this.rendered) {
+        this.#collapsed = true;
         const auto = this.options.position ?? {};
         this.#beforeMin = {
           width: auto.width === "auto" ? "auto" : this.position.width,
@@ -119,7 +135,10 @@ export function rememberWindow(Base, { module, name, size = true, from } = {}) {
       if (this.#minimizing) await Promise.race([this.#minimizing.catch(() => null), new Promise((r) => setTimeout(r, 1200))]);
       // A restore already under way is the one to wait for.
       if (this.#restore) return this.#restore;
-      if (!this.minimized) return super.maximize();
+      if (!this.minimized) {
+        this.#collapsed = false;
+        return super.maximize();
+      }
       this.#restore = this.#restoreWhole().finally(() => (this.#restore = null));
       return this.#restore;
     }
@@ -138,6 +157,7 @@ export function rememberWindow(Base, { module, name, size = true, from } = {}) {
           }
         }
         await pending;
+        this.#collapsed = false;
         await settleWindow(this.element);
         // Not if it was closed or minimized again meanwhile.
         if (was && this.rendered && !this.minimized) this.setPosition(was);

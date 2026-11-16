@@ -11,16 +11,21 @@
 .pct-app .pct p { margin: 2px 0; }
 .pct-app .pct ul, .pct-app .pct ol { margin: 0; padding: 0; list-style: none; }
 .pct-app .pct button { width: auto; flex: 0 0 auto; }
+/* Buttons that took the place of links keep the links' look (no Foundry button chrome). */
+.pct-app .pct :where(button:not(.pct-roll)), .pct-qpanel :where(button), .pct-apply :where(button.pct-undo) { appearance: none; background: none; border: none; box-shadow: none; color: inherit; font: inherit; height: auto; min-height: 0; margin: 0; padding: 0; line-height: inherit; text-align: inherit; cursor: pointer; }
+.pct-app .pct button:not(.pct-roll):disabled { cursor: default; }
+.pct-app .pct .pct-sr, .pct-app .pct .pct-nolabel > span:first-child { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .pct-app textarea::placeholder, .pct-app input::placeholder { color: currentColor; opacity: 0.55; font-style: italic; }
 
 /* Rail */
 .pct-app .pct-rail { flex: 0 0 168px; display: flex; flex-direction: column; gap: 2px; padding: 8px 6px; border-right: 1px solid var(--pct-line); overflow-y: auto; }
-.pct-app .pct .pct-rail > a { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 5px; opacity: 0.8; }
-.pct-app .pct .pct-rail > a i { width: 16px; text-align: center; }
-.pct-app .pct .pct-rail > a span { flex: 1; }
-.pct-app .pct .pct-rail > a em { font-style: normal; font-size: 11px; opacity: 0.7; }
-.pct-app .pct .pct-rail > a:hover { opacity: 1; background: var(--pct-soft); }
-.pct-app .pct .pct-rail > a.active { opacity: 1; font-weight: 600; background: var(--pct-soft); box-shadow: inset 3px 0 0 var(--pct-accent); }
+.pct-app .pct .pct-tabs { display: flex; flex-direction: column; gap: 2px; }
+.pct-app .pct .pct-rail .pct-tab { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 5px; opacity: 0.8; }
+.pct-app .pct .pct-rail .pct-tab i { width: 16px; text-align: center; }
+.pct-app .pct .pct-rail .pct-tab span { flex: 1; }
+.pct-app .pct .pct-rail .pct-tab em { font-style: normal; font-size: 11px; opacity: 0.7; }
+.pct-app .pct .pct-rail .pct-tab:hover { opacity: 1; background: var(--pct-soft); }
+.pct-app .pct .pct-rail .pct-tab.active { opacity: 1; font-weight: 600; background: var(--pct-soft); box-shadow: inset 3px 0 0 var(--pct-accent); }
 .pct-app .pct-rail-foot { margin-top: auto; display: flex; flex-direction: column; gap: 4px; padding-top: 8px; border-top: 1px solid var(--pct-line); }
 
 /* Body */
@@ -37,6 +42,9 @@
 .pct-app .pct .pct-add { margin-top: 4px; font-size: 12px; opacity: 0.85; border-style: dashed; }
 .pct-app .pct .pct-eye { border: none; padding: 2px 4px; opacity: 0.55; }
 .pct-app .pct .pct-eye.pct-on { opacity: 1; }
+/* U4: on a quest's rows the eyes of revealed rows are dimmed, so what isn't shown yet stands out. */
+.pct-app .pct :is(.pct-qgoals, .pct-qjournal, .pct-qleads, .pct-qrewards) .pct-eye.pct-on { opacity: 0.3; }
+.pct-app .pct :is(.pct-qgoals, .pct-qjournal, .pct-qleads, .pct-qrewards) .pct-eye.pct-on:is(:hover, :focus-visible) { opacity: 1; }
 .pct-app .pct .pct-card-post { border: none; padding: 2px 4px; opacity: 0.7; }
 
 /* Cards */
@@ -258,7 +266,7 @@
 .pct-app .pct-qgroup > details > summary { cursor: pointer; font-weight: bold; padding: 2px 0; }
 .pct-app .pct-qgroup > details > ul { margin: 0 0 2px 12px; padding: 0 0 0 8px; list-style: none; border-left: 2px solid var(--pct-line); }
 .pct-app .pct-qjournal .pct-clue-grip { cursor: grab; opacity: 0; padding: 0 2px; transition: opacity 0.15s; }
-.pct-app .pct-qjournal li:hover > .pct-clue-grip, .pct-app .pct-qjournal .pct-clue-grip:focus { opacity: 0.6; }
+.pct-app .pct-qjournal li:hover > .pct-clue-grip, .pct-app .pct-qjournal .pct-clue-grip:focus, .pct-app .pct-qjournal .pct-clue-grip:focus-visible { opacity: 0.8; }
 .pct-app .pct-drop-over { outline: 1px dashed var(--pct-accent); outline-offset: 1px; background: rgba(176, 141, 74, 0.12); }
 .pct-app .pct .pct-chip.pct-qclues, .pct-app .pct .pct-chip.pct-qunder { opacity: 0.8; }
 .pct-app .pct-qleads li.pct-qfollowed { display: block; padding: 3px 0 0; border-bottom: none; }
@@ -317,7 +325,7 @@
 .pct-qpanel { --pct-accent: #b08d4a; --pct-fill: #a63d32; --pct-ok: #4f8a4b; --pct-line: rgba(176, 141, 74, 0.45);
   position: fixed; z-index: 30; width: 280px; pointer-events: auto; color: #e9e3d5; font-size: 13px;
   background: rgba(14, 12, 18, 0.95); border: 1px solid var(--pct-line); border-radius: 6px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5); }
-.pct-qpanel a { color: inherit; cursor: pointer; }
+.pct-qpanel :is(a, button) { color: inherit; cursor: pointer; }
 .pct-qpanel .pct-qp-head { display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 8px; cursor: move; user-select: none;
   font-weight: 600; letter-spacing: 0.04em; border-bottom: 1px solid var(--pct-line); }
 .pct-qpanel.pct-qp-min .pct-qp-head { border-bottom: none; }
@@ -344,7 +352,7 @@
 .pct-qpanel .pct-qp-text { flex: 1; overflow-wrap: anywhere; }
 .pct-qpanel .pct-qp-text > i { font-size: 10px; }
 .pct-qpanel .pct-qp-box { flex: none; }
-.pct-qpanel a.pct-qp-box:hover { color: var(--pct-accent); }
+.pct-qpanel button.pct-qp-box:hover { color: var(--pct-accent); }
 .pct-qpanel .pct-qp-box.pct-busy { opacity: 0.4; pointer-events: none; }
 .pct-qpanel .pct-qp-chip { flex: none; font-size: 10px; padding: 0 5px; border: 1px solid rgba(127, 127, 127, 0.5); border-radius: 8px; white-space: nowrap; }
 .pct-qpanel .pct-qp-none { margin: 2px 0 0 18px; font-size: 12px; opacity: 0.7; font-style: italic; }
@@ -395,3 +403,28 @@ a.pct-reveal-link.pct-drop-on { outline: 2px solid #5a8cc8; outline-offset: 1px;
 .pct-reveal-dialog .pct-rl-note em { opacity: 0.8; }
 .pct-reveal-dialog .pct-rl-missing { color: #b04a3c; opacity: 1; }
 .pct-reveal-dialog .pct-hint { font-size: 11px; opacity: 0.7; margin: 8px 0 0; }
+
+/* U2: a quest's "More" menu. */
+.pct-app .pct .pct-more { position: relative; display: inline-flex; }
+.pct-app .pct .pct-more > summary { list-style: none; border: none; padding: 2px 5px; opacity: 0.8; }
+.pct-app .pct .pct-more > summary::-webkit-details-marker { display: none; }
+.pct-app .pct .pct-more[open] > summary, .pct-app .pct .pct-more > summary:hover { opacity: 1; background: var(--pct-soft); }
+.pct-app .pct .pct-menu { position: absolute; right: 0; top: calc(100% + 2px); z-index: 30; min-width: 230px; display: flex; flex-direction: column; gap: 1px; padding: 4px; border: 1px solid var(--pct-line); border-radius: 6px; background: var(--color-cool-5, #1f1e1b); color: var(--color-light-1, #eee); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45); font-weight: normal; }
+.pct-app.theme-light .pct .pct-menu, body.theme-light .pct-app .pct .pct-menu { background: var(--color-light-1, #f4f1ea); color: var(--color-dark-1, #222); }
+.pct-app .pct .pct-menu .pct-btn { border: none; justify-content: flex-start; padding: 4px 8px; width: 100%; opacity: 1; }
+.pct-app .pct .pct-menu hr { margin: 3px 0; border: 0; border-top: 1px solid var(--pct-line); }
+.pct-app .pct .pct-menu .pct-danger { color: var(--pct-fill); }
+/* F6: a quest section's fold button. */
+.pct-app .pct .pct-secfold { border: none; padding: 0 4px 0 0; opacity: 0.7; }
+.pct-app .pct .pct-secfold:hover { opacity: 1; }
+.pct-app .pct button.pct-qlink, .pct-app .pct button.pct-npc { display: inline-flex; align-items: center; gap: 4px; }
+/* F9: rolls waiting for Apply; U6: who rolled this round; F3: what's new in the quest panel; F4: the since list. */
+.pct-app .pct .pct-waiting { gap: 8px; padding: 4px 8px; margin-bottom: 6px; border-radius: 5px; background: var(--pct-soft); }
+.pct-app .pct .pct-rolled { flex-wrap: wrap; gap: 4px; margin: 4px 0; }
+.pct-app .pct .pct-rolled .pct-met { border-color: var(--pct-ok); color: var(--pct-ok); }
+.pct-qpanel .pct-qp-new { font-size: 11px; padding: 0 5px; border-radius: 8px; background: var(--pct-accent, #b08d4a); color: #fff; }
+.pct-since .pct-since-list { max-height: 420px; overflow-y: auto; }
+.pct-since .pct-since-list h4 { margin: 8px 0 2px; }
+.pct-since .pct-since-list ul { margin: 0; padding-left: 16px; }
+.pct-since .pct-since-list li { margin: 2px 0; }
+.pct-apply button.pct-undo { line-height: inherit; }

@@ -1,4 +1,4 @@
-/* Sir Bayard's module kit: pf2e-rules 1. Copied unchanged into each module that uses it; edit the kit's source, not
+/* Sir Bayard's module kit: pf2e-rules 2. Copied unchanged into each module that uses it; edit the kit's source, not
  * this copy. */
 
 /*
@@ -10,6 +10,9 @@
  *   Hooks.once("ready", () => rules.load());           // once; every getter after it is synchronous
  *   rules.dcByLevel(5)        a number, or null when the table couldn't be read
  *   rules.get("reputation")   { ok, value, error, page, matchedBy, notes? } (value is frozen)
+ *
+ * A module that needs only some tables names them (`tables: ["attitudes"]`): only those are read, and the GM is told
+ * only about those. The GM Screen journal isn't opened when none of them is in it.
  *
  * A reader parses its table by column position, not by header text, so a translated system's tables still read (the
  * names in them come out in the system's language, and numbers written "355.000" or "355 000" read too). Readers of
@@ -503,8 +506,10 @@ const whole = (x) => (typeof x === "number" ? (Number.isInteger(x) ? x : null) :
  * @param {string} opts.module   the module's id (for the console)
  * @param {string} opts.title    the module's name, as the GM sees it in a notice
  * @param {boolean} [opts.byId]  false finds every page by its name only (the kit's live test, to check the names)
+ * @param {string[]} [opts.tables]  the tables this module uses (names from names()); all of them when left out
  */
-export function pf2eRules({ module, title, byId: useIds = true } = {}) {
+export function pf2eRules({ module, title, byId: useIds = true, tables = null } = {}) {
+  const wanted = (name) => !Array.isArray(tables) || tables.includes(name);
   const results = new Map();
   let loading = null;
   let loaded = false;
@@ -587,14 +592,15 @@ export function pf2eRules({ module, title, byId: useIds = true } = {}) {
       loading ??= (async () => {
         try {
           systemVersion = globalThis.game?.system?.version ?? null;
-          results.set("attitudes", attitudes());
+          if (wanted("attitudes")) results.set("attitudes", attitudes());
+          const readers = Object.entries(READERS).filter(([name]) => wanted(name));
           let entry = null;
           try {
-            entry = await screen();
+            entry = readers.length ? await screen() : null;
           } catch {
             entry = null;
           }
-          for (const [name, reader] of Object.entries(READERS)) {
+          for (const [name, reader] of readers) {
             let r;
             try {
               r = entry ? run(reader, entry) : { ok: false, error: "the GM Screen journal (pf2e.journals) wasn't found" };
@@ -604,7 +610,7 @@ export function pf2eRules({ module, title, byId: useIds = true } = {}) {
             results.set(name, r);
           }
         } catch (err) {
-          for (const name of api.names()) if (!results.has(name)) results.set(name, { ok: false, error: String(err?.message ?? err) });
+          for (const name of api.names()) if (wanted(name) && !results.has(name)) results.set(name, { ok: false, error: String(err?.message ?? err) });
         }
         loaded = true;
         tell([...results].filter(([, r]) => !r.ok).map(([n, r]) => [n, r.error]));
@@ -623,6 +629,7 @@ export function pf2eRules({ module, title, byId: useIds = true } = {}) {
     /** { ok, value, error, page, matchedBy, notes? } for a table. Not ok before load() has finished, or for an unknown name. */
     get(name) {
       if (!api.names().includes(name)) return { ok: false, error: `no table named "${name}"` };
+      if (!wanted(name)) return { ok: false, error: `"${name}" isn't one of the tables this module reads` };
       if (!results.has(name)) return { ok: false, error: loading ? "still loading" : "load() not called" };
       return results.get(name);
     },

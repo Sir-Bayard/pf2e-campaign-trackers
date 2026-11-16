@@ -1,4 +1,4 @@
-/* Sir Bayard's module kit: gm-tabs 1. Copied unchanged into each module that uses it; edit the kit's source, not
+/* Sir Bayard's module kit: gm-tabs 2. Copied unchanged into each module that uses it; edit the kit's source, not
  * this copy. */
 
 /**
@@ -22,7 +22,10 @@
  *   for isLead(); leadNow() asks it first and takes over when it doesn't answer within 3 s. A lead that was only busy
  *   (a long scene load) and answers later gets the lead back at once; anything both tabs handled in between was done
  *   twice, so keep to leadNow() for work that is safe that way, or check the document first.
- * - leadNow() asks at most once every 5 s: a lower tab heard from in that time is taken to be there.
+ * - leadNow() asks at most once every 5 s: a lower tab heard from in that time is taken to be there. A module whose
+ *   work on a hook must not be dropped (a recorder) passes `fresh: 0`: a tab that isn't the lead then always asks, so
+ *   a lead that has just gone without a goodbye the others got (a reload in another browser) is noticed within 3 s.
+ *   The lead answers at once, so this costs a socket message each way only while the GM has two tabs.
  * - A tab that was asleep or frozen (its own beat late by more than 150 s) forgets what it knew and starts over with a
  *   hello and a new 1.5 s, rather than leading on a stale view.
  *
@@ -40,7 +43,8 @@
  *   work done once at startup:   if (await tabs.leadNow()) ...   (leadNow waits out the first 1.5 s)
  *
  * @param {string} module   the module's id
- * @param {object} [opts]   for tests: `now` (a clock), `ttl`, `beat`, `grace`, `answer`, `fresh` in ms
+ * @param {object} [opts]   `fresh` in ms (see above; default 5000); for tests: `now` (a clock), `ttl`, `beat`, `grace`,
+ *                          `answer` in ms
  */
 export function gmTabs(module, { now = () => Date.now(), ttl = 150000, beat = 15000, grace = 1500, answer = 3000, fresh = 5000 } = {}) {
   const channel = `module.${module}`;
